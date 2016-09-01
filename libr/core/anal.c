@@ -3270,14 +3270,16 @@ R_API void r_core_anal_list_vtables(void *core, bool printJson) {
 	if (vtables) {
 		if (printJson) {
 			bool isFirstElement = true;
-			r_cons_printf("[");
+			r_cons_printf ("[");
 			r_list_foreach (vtables, vtableIter, table) {
-				if (!isFirstElement) r_cons_printf (",");
+				if (!isFirstElement) {
+					r_cons_printf (",");
+				}
 				r_cons_printf ("{\"offset\":%"PFMT64d",\"methods\":%d}",
 					table->saddr, table->methods);
 				isFirstElement = false;
 			}
-			r_cons_println("]");
+			r_cons_println ("]");
 		} else {
 			r_list_foreach (vtables, vtableIter, table) {
 				ut64 vtableStartAddress = table->saddr;
