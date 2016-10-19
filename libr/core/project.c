@@ -211,7 +211,54 @@ static bool r_core_rop_load(RCore *core, const char *prjfile) {
 	return true;
 }
 
+static bool r_core_coop_load(RCore *core, const char *prjfile) {
+	char *path, *db;
+	bool found = 0;
+	SdbListIter *it;
+	SdbNs *ns;
+
+	const char *prjdir = r_config_get (core->config, "dir.projects");
+	Sdb *coopDB = sdb_ns (core->sdb, "coop", false);
+
+	if (!prjfile || !*prjfile) {
+		return false;
+	}
+
+	db = (*prjfile == '/') ? r_str_newf ("%s.d", prjfile) : r_str_newf ("%s/%s.d", prjdir, prjfile); 
+	if (!db) return false;
+	path = (*prjfile == '/') ? strdup (db) : r_file_abspath (db);
+	
+	if (!path) {
+		free (db);
+		return false;
+	}
+
+	if (coopDB) {
+		ls_foreach (core->sdb->ns, it, ns){
+			if (ns->sdb == coopDB) {
+				ls_delete (core->sdb->ns, it);
+				found = true;
+				break;
+			}
+		}
+	}
+	if (!found) {
+		sdb_free (coopDB);
+	}
+	coopDB = sdb_new (path, "coop", 0);
+	if (!coopDB) {
+		free (db);
+		free (path);
+		return false;
+	}
+	sdb_ns_set (core->sdb, "coop", coopDB);
+	free (path);
+	free (db);
+	return true;
+}
+
 R_API void r_core_project_load(RCore *core, const char *prjfile) {
+	r_core_coop_load (core, prjfile);
 	(void)r_core_rop_load (core, prjfile);
 	(void)r_core_project_load_xrefs (core, prjfile);
 }
@@ -470,6 +517,13 @@ R_API bool r_core_project_save(RCore *core, const char *file) {
 		snprintf (buf, sizeof (buf), "%s.d" R_SYS_DIR "rop", prj);
 		sdb_file (rop_db, buf);
 		sdb_sync (rop_db);
+	}
+
+	Sdb *coop_db = sdb_ns (core->sdb, "coop", false);
+	if (coop_db) {
+		snprintf (buf, sizeof (buf), "%s.d" R_SYS_DIR "coop", prj);
+		sdb_file (coop_db, buf);
+		sdb_sync (coop_db);
 	}
 
 	if (!r_core_project_save_rdb (core, prj, R_CORE_PRJ_ALL^R_CORE_PRJ_XREFS)) {

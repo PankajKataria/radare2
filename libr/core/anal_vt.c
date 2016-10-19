@@ -1,3 +1,8 @@
+/* radare - LGPL - Copyright 2016 - pankajkataria */
+
+#include "r_core.h"
+#include "sdb/sdb.h"
+
 #define VTABLE_BUFF_SIZE 10
 
 typedef struct vtable_info_t {
@@ -70,7 +75,7 @@ static int isVtableStart(RCore *core, ut64 curAddress) {
 	return false;
 }
 
-RList* search_virtual_tables(RCore *core){
+static RList* search_virtual_tables(RCore *core){
 	if (!core) {
 		return NULL;
 	}
@@ -112,6 +117,12 @@ RList* search_virtual_tables(RCore *core){
 		eprintf ("No virtual tables found\n");
 		r_list_free (vtables);
 		return NULL;
+	}
+	Sdb* coopDB = sdb_ns (((RCore *)core)->sdb, "coop", true);
+	if (!coopDB) {
+		eprintf ("Error : Could not create coop database\n");
+	} else {
+		r_core_anal_save_vtables (core, vtables, coopDB);
 	}
 	return vtables;
 }
@@ -174,5 +185,15 @@ static void r_core_anal_list_vtables_all(void *core) {
 			r_cons_printf ("f %s=0x%08"PFMT64x"\n", function->name, function->addr);
 		}
 	}
+	r_list_free (vtables);
 }
 
+void r_core_anal_save_vtables (RCore* core, RList* vtables, Sdb* coopDB) {
+	if (vtables) {
+		RListIter* vtableIter;
+		vtable_info* vtable;
+		r_list_foreach (vtables, vtableIter, vtable) {
+			const char *key = sdb_fmt (0, "0x%08"PFMT64x, saddr->saddr);
+		}
+	}
+}
