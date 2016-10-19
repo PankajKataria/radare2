@@ -52,8 +52,9 @@ R_API void r_io_raise(RIO *io, int fd) {
 }
 
 R_API int r_io_is_listener(RIO *io) {
-	if (io && io->plugin && io->plugin->listener)
+	if (io && io->plugin && io->plugin->listener) {
 		return io->plugin->listener (io->desc);
+	}
 	return false;
 }
 
@@ -100,7 +101,7 @@ R_API RIODesc *r_io_open_as(RIO *io, const char *urihandler, const char *file, i
 	int urilen, hlen = strlen (urihandler);
 	urilen = hlen + strlen (file) + 5;
 	uri = malloc (urilen);
-	if (uri == NULL)
+	if (!uri)
 		return NULL;
 	if (hlen > 0)
 		snprintf (uri, urilen, "%s://%s", urihandler, file);
@@ -850,8 +851,9 @@ R_API ut64 r_io_size(RIO *io) {
 
 R_API int r_io_system(RIO *io, const char *cmd) {
 	int ret = -1;
-	if (io->plugin && io->plugin->system)
+	if (io->plugin && io->plugin->system) {
 		ret = io->plugin->system (io, io->desc, cmd);
+	}
 	return ret;
 }
 
@@ -868,7 +870,7 @@ R_API int r_io_plugin_close(RIO *io, RIODesc *desc) {
 
 R_API int r_io_close(RIO *io, RIODesc *d) {
 	RIODesc *cur = NULL;
-	if (io == NULL || d == NULL) {
+	if (!io || !d) {
 		return -1;
 	}
 	if (d != io->desc) {
@@ -920,6 +922,7 @@ R_API int r_io_bind(RIO *io, RIOBind *bnd) {
 	bnd->write_at = r_io_write_at;
 	bnd->size = r_io_size;
 	bnd->seek = r_io_seek;
+	bnd->system = r_io_system;
 	bnd->is_valid_offset = r_io_is_valid_offset;
 
 	bnd->desc_open = r_io_open_nomap;
@@ -940,8 +943,9 @@ R_API int r_io_bind(RIO *io, RIOBind *bnd) {
 }
 
 R_API int r_io_accept(RIO *io, int fd) {
-	if (r_io_is_listener (io) && io->plugin && io->plugin->accept)
+	if (r_io_is_listener (io) && io->plugin && io->plugin->accept) {
 		return io->plugin->accept (io, io->desc, fd);
+	}
 	return false;
 }
 
@@ -953,20 +957,26 @@ R_API int r_io_shift(RIO *io, ut64 start, ut64 end, st64 move) {
 	if (!shiftsize || (end - start) <= shiftsize) return false;
 	rest = (end - start) - shiftsize;
 
-	if (!(buf = malloc (chunksize))) return false;
-
-	if (move > 0)
+	if (!(buf = malloc (chunksize))) {
+		return false;
+	}
+	if (move > 0) {
 		src = end - shiftsize;
-	else src = start + shiftsize;
-
+	} else {
+		src = start + shiftsize;
+	}
 	while (rest > 0) {
-		if (chunksize > rest) chunksize = rest;
-		if (move > 0) src -= chunksize;
-
+		if (chunksize > rest) {
+			chunksize = rest;
+		}
+		if (move > 0) {
+			src -= chunksize;
+		}
 		r_io_read_at (io, src, buf, chunksize);
 		r_io_write_at (io, src + move, buf, chunksize);
-
-		if (move < 0) src += chunksize;
+		if (move < 0) {
+			src += chunksize;
+		}
 		rest -= chunksize;
 	}
 	free (buf);
@@ -974,10 +984,12 @@ R_API int r_io_shift(RIO *io, ut64 start, ut64 end, st64 move) {
 }
 
 R_API int r_io_create(RIO *io, const char *file, int mode, int type) {
-	if (io->plugin && io->plugin->create)
+	if (io->plugin && io->plugin->create) {
 		return io->plugin->create (io, file, mode, type);
-	if (type == 'd' || type == 1)
+	}
+	if (type == 'd' || type == 1) {
 		return r_sys_mkdir (file);
+	}
 	return r_sandbox_creat (file, mode);
 }
 
@@ -990,10 +1002,12 @@ static ut8 *r_io_desc_read(RIO *io, RIODesc *desc, ut64 *out_sz) {
 	ut8 *buf = NULL;
 	ut64 off = 0;
 
-	if (!io || !desc || !out_sz) {
+	if (!io || !out_sz) {
 		return NULL;
 	}
-
+	if (!desc) {
+		desc = io->desc;
+	}
 	if (*out_sz == UT64_MAX) {
 		*out_sz = r_io_desc_size (io, desc);
 	}
@@ -1001,7 +1015,6 @@ static ut8 *r_io_desc_read(RIO *io, RIODesc *desc, ut64 *out_sz) {
 		*out_sz = 1024 * 1024 * 1; // 2MB
 	}
 	off = io->off;
-
 	if (*out_sz == UT64_MAX) {
 		return NULL;
 	}
@@ -1010,13 +1023,13 @@ static ut8 *r_io_desc_read(RIO *io, RIODesc *desc, ut64 *out_sz) {
 				"Allocating R_IO_MAX_ALLOC set as the environment variable.\n", io->maxalloc);
 		*out_sz = io->maxalloc;
 	}
-
 	buf = malloc (*out_sz);
 	if (!buf) {
 		if (*out_sz > R_IO_MAX_ALLOC) {
 			char *num_unit = r_num_units (NULL, *out_sz);
 			eprintf ("Failed to allocate %s bytes.\n"
-					"Allocating %"PFMT64u" bytes.\n", num_unit, (ut64)R_IO_MAX_ALLOC);
+				"Allocating %"PFMT64u" bytes.\n",
+				num_unit, (ut64)R_IO_MAX_ALLOC);
 			free (num_unit);
 			*out_sz = R_IO_MAX_ALLOC;
 			buf = malloc (*out_sz);
@@ -1085,7 +1098,7 @@ if (hasperm) {
 	}
 	if (io->debug) {
 		// TODO check debug maps here
-		return 1;
+		return true;
 	} else {
 		if (io_sectonly) {
 			if (r_list_empty (io->sections)) {

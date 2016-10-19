@@ -107,7 +107,7 @@ static int linklist_readable (void *p, const char *k, const char *v) {
 
 }
 static int typelist (void *p, const char *k, const char *v) {
-	r_cons_printf ("tk %s = %s\n", k, v);
+	r_cons_printf ("tk %s=%s\n", k, v);
 #if 0
 	if (!strcmp (v, "func")) {
 		const char *rv = sdb_const_get (DB,
@@ -155,29 +155,33 @@ static int typelist (void *p, const char *k, const char *v) {
 
 static int cmd_type(void *data, const char *input) {
 	RCore *core = (RCore *)data;
+	char *res;
+	const char *help_message[] = {
+		"USAGE tu[...]", "", "",
+		"tu", "", "List all loaded unions",
+		"tu?", "", "show this help",
+		NULL
+	};
 
 	switch (input[0]) {
 	// t [typename] - show given type in C syntax
 	case 'u': // "tu"
 		switch (input[1]) {
-		case '?': {
-			const char *help_message[] = {
-				"USAGE tu[...]", "", "",
-				"tu", "", "List all loaded unions",
-				"tu?", "", "show this help",
-				NULL };
+		case '?':
 			r_core_cmd_help (core, help_message);
-		} break;
+			break;
 		case 0:
 			sdb_foreach (core->anal->sdb_types, stdprintifunion, core);
 			break;
 		}
 		break;
 	case 'k': // "tk"
-		if (input[1] == ' ') {
-			sdb_query (core->anal->sdb_types, input + 2);
-		} else sdb_query (core->anal->sdb_types, "*");
-		fflush (stdout);
+		res = (input[1] == ' ')
+			? sdb_querys (core->anal->sdb_types, NULL, -1, input + 2)
+			: sdb_querys (core->anal->sdb_types, NULL, -1, "*");
+		if (res) {
+			r_cons_print (res);
+		}
 		break;
 	case 's': // "ts"
 		switch (input[1]) {
@@ -251,7 +255,7 @@ static int cmd_type(void *data, const char *input) {
 		if (p) {
 			*p++ = 0;
 			isenum = sdb_const_get (core->anal->sdb_types, s, 0);
-			if (isenum && !strcmp (isenum, "enum")) {
+			if (isenum && !strncmp (isenum, "enum", 4)) {
 				const char *q = sdb_fmt (0, "%s.0x%x", s, (ut32)r_num_math (core->num, p));
 				const char *res = sdb_const_get (core->anal->sdb_types, q, 0);
 				if (res)

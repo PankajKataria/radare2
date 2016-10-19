@@ -1,7 +1,6 @@
 /* radare - LGPL - Copyright 2009-2016 - pancake */
 
 #include <r_core.h>
-
 #include <string.h>
 
 #define NPF 7
@@ -15,7 +14,7 @@ static void visual_refresh(RCore *core);
 static const char *printfmt[] = {
 	"x", "pd $r",
 	debugfmt_default,
-	"pxw", "pc", "pxA", "pxa"
+	"pCd $r-1", "pxw", "pc", "pxA", "pxa"
 };
 
 #undef USE_THREADS
@@ -190,10 +189,12 @@ static int visual_help() {
 	" /        in cursor mode search in current block\n"
 	" :cmd     run radare command\n"
 	" ;[-]cmt  add/remove comment\n"
+	" ,file    add a link to the text file\n"
 	" /*+-[]   change block size, [] = resize hex.cols\n"
 	" >||<     seek aligned to block size\n"
 	" a/A      (a)ssemble code, visual (A)ssembler\n"
 	" b        toggle breakpoint\n"
+	" B        enumerate and inspect classes\n"
 	" c/C      toggle (c)ursor and (C)olors\n"
 	" d[f?]    define function, data, code, ..\n"
 	" D        enter visual diff mode (set diff.from/to)\n"
@@ -249,7 +250,7 @@ R_API void r_core_visual_prompt_input (RCore *core) {
 	ut64 bsze = core->blocksize;
 	int h;
 	(void)r_cons_get_size (&h);
-	r_cons_gotoxy (0, h-2);
+	r_cons_gotoxy (0, h - 2);
 	r_cons_reset_colors ();
 	r_cons_printf ("\nPress <enter> to return to Visual mode.\n");
 	r_cons_show_cursor (true);
@@ -855,7 +856,7 @@ void SetWindow(int Width, int Height) {
 char *getcommapath(RCore *core) {
 	char *cwd;
 	const char *dir = r_config_get (core->config, "dir.projects");
-	const char *prj = r_config_get (core->config, "file.project");
+	const char *prj = r_config_get (core->config, "prj.name");
 	if (dir && *dir && prj && *prj) {
 		char *abspath = r_file_abspath (dir);
 		/* use prjdir as base directory for comma-ent files */
@@ -1493,7 +1494,9 @@ R_API int r_core_visual_cmd(RCore *core, int ch) {
 		r_core_visual_colors (core);
 		break;
 	case 'M':
-		r_core_visual_mounts (core);
+		if (!r_list_empty (core->fs->roots)) {
+			r_core_visual_mounts (core);
+		}
 		break;
 	case '&':
 		toggle_bits (core);
@@ -2062,7 +2065,9 @@ R_API void r_core_visual_title (RCore *core, int color) {
 		r_core_block_size (core, hexcols * core->cons->rows * 8);
 		break;
 	}
-
+	if (r_config_get_i (core->config, "scr.zoneflags")) {
+		r_core_cmd (core, "fz:", 0);
+	}
 	if (r_config_get_i (core->config, "cfg.debug")) {
 		ut64 curpc = r_debug_reg_get (core->dbg, "PC");
 		if (curpc && curpc != UT64_MAX && curpc != oldpc) {
@@ -2257,6 +2262,13 @@ R_API int r_core_visual(RCore *core, const char *input) {
 	//r_cons_set_cup (true);
 
 	core->vmode = false;
+	/* honor vim */
+	if (!strncmp (input, "im", 2)) {
+		char *cmd = r_str_newf ("!v%s", input);
+		int ret = r_core_cmd0 (core, cmd);
+		free (cmd);
+		return ret;
+	}
 	while (*input) {
 		if (!r_core_visual_cmd (core, input[0])) {
 			return 0;

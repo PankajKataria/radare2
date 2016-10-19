@@ -129,25 +129,26 @@ R_API ut64 r_core_get_asmqjmps(RCore *core, const char *str) {
  * The returned buffer needs to be freed
  */
 R_API char* r_core_add_asmqjmp(RCore *core, ut64 addr) {
-	int i, found = 0;
-	if (!core->asmqjmps) return NULL;
+	bool found = false;
+	if (!core->asmqjmps) {
+		return NULL;
+	}
 	if (core->is_asmqjmps_letter) {
 		if (core->asmqjmps_count >= R_CORE_ASMQJMPS_MAX_LETTERS) {
 			return NULL;
 		}
-
 		if (core->asmqjmps_count >= core->asmqjmps_size - 2) {
 			core->asmqjmps = realloc (core->asmqjmps, core->asmqjmps_size * 2 * sizeof (ut64));
 			if (!core->asmqjmps) return NULL;
 			core->asmqjmps_size *= 2;
 		}
 	}
-
 	if (core->asmqjmps_count < core->asmqjmps_size - 1) {
+		int i;
 		char t[R_CORE_ASMQJMPS_LEN_LETTERS + 1];
 		for (i = 0; i < core->asmqjmps_count + 1; i++) {
 			if (core->asmqjmps[i] == addr) {
-				found = 1;
+				found = true;
 				break;
 			}
 		}
@@ -157,9 +158,8 @@ R_API char* r_core_add_asmqjmp(RCore *core, ut64 addr) {
 		}
 		r_core_set_asmqjmps (core, t, sizeof (t), i);
 		return strdup (t);
-	} else {
-		return NULL;
 	}
+	return NULL;
 }
 
 /* returns in str a string that represents the shortcut to access the asmqjmp
@@ -188,12 +188,28 @@ R_API void r_core_set_asmqjmps(RCore *core, char *str, size_t len, int pos) {
 	}
 }
 
+static void setab(RCore *core, const char *arch, int bits) {
+	if (arch) {
+		r_config_set (core->config, "asm.arch", arch);
+	}
+	if (bits > 0) {
+		r_config_set_i (core->config, "asm.bits", bits);
+	}
+}
+
+static const char *getName(RCore *core, ut64 addr) {
+	RFlagItem *item = r_flag_get_i (core->flags, addr);
+	return item ? item->name : NULL;
+}
+
 R_API int r_core_bind(RCore *core, RCoreBind *bnd) {
 	bnd->core = core;
 	bnd->bphit = (RCoreDebugBpHit)r_core_debug_breakpoint_hit;
 	bnd->cmd = (RCoreCmd)r_core_cmd0;
 	bnd->cmdstr = (RCoreCmdStr)r_core_cmd_str;
 	bnd->puts = (RCorePuts)r_cons_strcat;
+	bnd->setab = (RCoreSetArchBits)setab;
+	bnd->getName = (RCoreGetName)getName;
 	return true;
 }
 
@@ -257,6 +273,23 @@ static ut64 bbSize(RAnalFunction *fcn, ut64 addr) {
 		}
 	}
 	return 0;
+}
+
+static const char *str_callback(RNum *user, ut64 off, int *ok) {
+	RFlag *f = (RFlag*)user;
+	if (ok) {
+		*ok = 0;
+	}
+	if (f) {
+		RFlagItem *item = r_flag_get_i (f, off);
+		if (item) {
+			if (ok) {
+				*ok = true;
+			}
+			return item->name;
+		}
+	}
+	return NULL;
 }
 
 static ut64 num_callback(RNum *userptr, const char *str, int *ok) {
@@ -351,7 +384,7 @@ static ut64 num_callback(RNum *userptr, const char *str, int *ok) {
 			}
 			bptr = strdup (str+3);
 			ptr = strchr (bptr, '}');
-			if (ptr == NULL) {
+			if (!ptr) {
 				// invalid json
 				free (bptr);
 				break;
@@ -853,14 +886,16 @@ openfile:
 		    (!strncmp (line->buffer.data, "?v ", 3)) ||
 		    (!strncmp (line->buffer.data, "? ", 2))) {
 			int n, i = 0;
-			int sdelta = (line->buffer.data[1]==' ')?2:
-				(line->buffer.data[2]==' ')?3:4;
+			int sdelta = (line->buffer.data[1] == ' ')
+				? 2 : (line->buffer.data[2] == ' ')
+				? 3 : 4;
 			n = strlen (line->buffer.data+sdelta);
 			r_list_foreach (core->flags->flags, iter, flag) {
 				if (!strncmp (flag->name, line->buffer.data+sdelta, n)) {
 					tmp_argv[i++] = flag->name;
-					if (i==TMP_ARGV_SZ)
+					if (i == TMP_ARGV_SZ) {
 						break;
+					}
 				}
 			}
 			tmp_argv[i>255?255:i] = NULL;
@@ -936,8 +971,9 @@ R_API int r_core_fgets(char *buf, int len) {
 	rli->completion.argv = radare_argv;
 	rli->completion.run = autocomplete;
 	ptr = r_line_readline ();
-	if (ptr == NULL)
+	if (!ptr) {
 		return -1;
+	}
 	strncpy (buf, ptr, len);
 	buf[len-1] = 0;
 	return strlen (buf)+1;
@@ -962,8 +998,7 @@ static int __dbg_write(void *user, int pid, ut64 addr, const ut8 *buf, int len) 
 static const char *r_core_print_offname(void *p, ut64 addr) {
 	RCore *c = (RCore*)p;
 	RFlagItem *item = r_flag_get_i (c->flags, addr);
-	if (item) return item->name;
-	return NULL;
+	return item ? item->name : NULL;
 }
 
 /**
@@ -984,14 +1019,17 @@ static int __disasm(void *_core, ut64 addr) {
 static void update_sdb(RCore *core) {
 	Sdb *d;
 	RBinObject *o;
-	if (!core)
+	if (!core) {
 		return;
+	}
 	//SDB// anal/
-	if (core->anal && core->anal->sdb)
+	if (core->anal && core->anal->sdb) {
 		sdb_ns_set (DB, "anal", core->anal->sdb);
+	}
 	//SDB// bin/
-	if (core->bin && core->bin->sdb)
+	if (core->bin && core->bin->sdb) {
 		sdb_ns_set (DB, "bin", core->bin->sdb);
+	}
 	//SDB// bin/info
 	o = r_bin_get_object (core->bin);
 	if (o) {
@@ -1005,8 +1043,10 @@ static void update_sdb(RCore *core) {
 		sdb_ns_set (DB, "syscall", core->assembler->syscall->db);
 	}
 	d = sdb_ns (DB, "debug", 1);
-	core->dbg->sgnls->refs++;
-	sdb_ns_set (d, "signals", core->dbg->sgnls);
+	if (core->dbg->sgnls) {
+		core->dbg->sgnls->refs++;
+		sdb_ns_set (d, "signals", core->dbg->sgnls);
+	}
 }
 
 // dupped in cmd_type.c
@@ -1015,11 +1055,11 @@ static char *getenumname(void *_core, const char *name, ut64 val) {
 	RCore *core = (RCore*)_core;
 
 	isenum = sdb_const_get (core->anal->sdb_types, name, 0);
-	if (isenum && !strcmp (isenum, "enum")) {
+	if (isenum && !strncmp (isenum, "enum", 4)) {
 		const char *q = sdb_fmt (0, "%s.0x%x", name, val);
 		return sdb_get (core->anal->sdb_types, q, 0);
 	} else {
-		eprintf ("This is not an enum\n");
+		eprintf ("This is not an enum (%s)\n", name);
 	}
 	return NULL;
 }
@@ -1190,10 +1230,9 @@ static char *r_core_anal_hasrefs_to_depth(RCore *core, ut64 value, int depth) {
 				break;
 			case 2:
 				r = r_utf8_encode_str ((const RRune *)buf, widebuf,
-							sizeof(widebuf) - 1);
+							sizeof (widebuf) - 1);
 				if (r == -1) {
-					eprintf ("Something was wrong %s-%d\n",
-						__FILE__, __LINE__);
+					eprintf ("Something was wrong with refs\n");
 				} else {
 					r_strbuf_appendf (s, " (%s%s%s)", c, widebuf, cend);
 				}
@@ -1253,7 +1292,7 @@ static void r_core_setenv (RCore *core) {
 R_API int r_core_init(RCore *core) {
 	core->blocksize = R_CORE_BLOCKSIZE;
 	core->block = (ut8*)malloc (R_CORE_BLOCKSIZE+1);
-	if (core->block == NULL) {
+	if (!core->block) {
 		eprintf ("Cannot allocate %d bytes\n", R_CORE_BLOCKSIZE);
 		/* XXX memory leak */
 		return false;
@@ -1293,9 +1332,7 @@ R_API int r_core_init(RCore *core) {
 	core->cmdqueue = NULL;
 	core->cmdrepeat = true;
 	core->yank_buf = r_buf_new();
-	core->num = r_num_new (&num_callback, core);
-	//core->num->callback = &num_callback;
-	//core->num->userptr = core;
+	core->num = r_num_new (&num_callback, &str_callback, core);
 	core->curasmstep = 0;
 	core->egg = r_egg_new ();
 	r_egg_setup (core->egg, R_SYS_ARCH, R_SYS_BITS, 0, R_SYS_OS);
@@ -1332,25 +1369,6 @@ R_API int r_core_init(RCore *core) {
 	core->assembler->num = core->num;
 	r_asm_set_user_ptr (core->assembler, core);
 	core->anal = r_anal_new ();
-
-	/* default noreturn functions */
-	/* osx */
-	r_anal_noreturn_add (core->anal, "sym.imp.__assert_rtn", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.imp.abort", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.imp.exit", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.imp._exit", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.imp.__stack_chk_fail", UT64_MAX);
-	/* linux */
-	r_anal_noreturn_add (core->anal, "sym.imp.__assert_fail", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.__assert_fail", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.abort", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "abort", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.exit", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym._exit", UT64_MAX);
-	r_anal_noreturn_add (core->anal, "sym.imp.__libc_init", UT64_MAX); /* mips */
-	/* windows */
-	r_anal_noreturn_add (core->anal, "sym.imp.kernel32.dll_ExitProcess", UT64_MAX);
-
 
 	core->anal->meta_spaces.cb_printf = r_cons_printf;
 	core->anal->cb.on_fcn_new = on_fcn_new;
@@ -1399,6 +1417,7 @@ R_API int r_core_init(RCore *core) {
 	r_io_bind (core->io, &(core->bin->iob));
 	r_flag_bind (core->flags, &(core->anal->flb));
 	r_anal_bind (core->anal, &(core->parser->analb));
+	r_core_bind (core, &(core->anal->coreb));
 
 	core->file = NULL;
 	core->files = r_list_new ();
@@ -1427,11 +1446,13 @@ R_API int r_core_init(RCore *core) {
 	// TODO: get arch from r_bin or from native arch
 	r_asm_use (core->assembler, R_SYS_ARCH);
 	r_anal_use (core->anal, R_SYS_ARCH);
-	if (R_SYS_BITS & R_SYS_BITS_64)
+	if (R_SYS_BITS & R_SYS_BITS_64) {
 		r_config_set_i (core->config, "asm.bits", 64);
-	else
-	if (R_SYS_BITS & R_SYS_BITS_32)
-		r_config_set_i (core->config, "asm.bits", 32);
+	} else {
+		if (R_SYS_BITS & R_SYS_BITS_32) {
+			r_config_set_i (core->config, "asm.bits", 32);
+		}
+	}
 	r_config_set (core->config, "asm.arch", R_SYS_ARCH);
 	r_bp_use (core->dbg->bp, R_SYS_ARCH, core->anal->bits);
 	update_sdb (core);
@@ -1502,11 +1523,13 @@ R_API RCore *r_core_free(RCore *c) {
 R_API void r_core_prompt_loop(RCore *r) {
 	int ret;
 	do {
-		if (r_core_prompt (r, false)<1)
+		if (r_core_prompt (r, false)<1) {
 			break;
+		}
 //			if (lock) r_th_lock_enter (lock);
-		if ((ret = r_core_prompt_exec (r))==-1)
+		if ((ret = r_core_prompt_exec (r))==-1) {
 			eprintf ("Invalid command\n");
+		}
 /*			if (lock) r_th_lock_leave (lock);
 		if (rabin_th && !r_th_wait_async (rabin_th)) {
 			eprintf ("rabin thread end \n");
@@ -1525,8 +1548,7 @@ static int prompt_flag (RCore *r, char *s, size_t maxlen) {
 	if (!f) return false;
 
 	if (f->offset < r->offset) {
-		snprintf (s, maxlen, "%s + %" PFMT64u, f->name,
-			r->offset - f->offset);
+		snprintf (s, maxlen, "%s + %" PFMT64u, f->name, r->offset - f->offset);
 	} else {
 		snprintf (s, maxlen, "%s", f->name);
 	}
@@ -1539,8 +1561,9 @@ static int prompt_flag (RCore *r, char *s, size_t maxlen) {
 
 static void prompt_sec(RCore *r, char *s, size_t maxlen) {
 	const RIOSection *sec = r_io_section_vget (r->io, r->offset);
-	if (!sec) return;
-
+	if (!sec) {
+		return;
+	}
 	snprintf (s, maxlen, "%s:", sec->name);
 }
 
@@ -1636,8 +1659,12 @@ R_API int r_core_prompt(RCore *r, int sync) {
 	set_prompt (r);
 
 	ret = r_cons_fgets (line, sizeof (line), 0, NULL);
-	if (ret == -2) return R_CORE_CMD_EXIT; // ^D
-	if (ret == -1) return false; // FD READ ERROR
+	if (ret == -2) {
+		return R_CORE_CMD_EXIT; // ^D
+	}
+	if (ret == -1) {
+		return false; // FD READ ERROR
+	}
 	r->num->value = rnv;
 	if (sync) {
 		return r_core_prompt_exec (r);
@@ -1650,17 +1677,21 @@ R_API int r_core_prompt(RCore *r, int sync) {
 R_API int r_core_prompt_exec(RCore *r) {
 	int ret = r_core_cmd (r, r->cmdqueue, true);
 	r_cons_flush ();
-	if (r->cons && r->cons->line && r->cons->line->zerosep)
+	if (r->cons && r->cons->line && r->cons->line->zerosep) {
 		r_cons_zero ();
+	}
 	return ret;
 }
 
 R_API int r_core_block_size(RCore *core, int bsize) {
 	ut8 *bump;
 	int ret = false;
-	if (bsize<0) return false;
-	if (bsize == core->blocksize)
+	if (bsize < 0) {
+		return false;
+	}
+	if (bsize == core->blocksize) {
 		return true;
+	}
 	if (r_sandbox_enable (0)) {
 		// TODO : restrict to filesize?
 		if (bsize > 1024*32) {
@@ -1672,15 +1703,15 @@ R_API int r_core_block_size(RCore *core, int bsize) {
 		eprintf ("Block size %d is too big\n", bsize);
 		return false;
 	}
-	if (bsize<1) {
+	if (bsize < 1) {
 		bsize = 1;
 	} else if (core->blocksize_max && bsize>core->blocksize_max) {
 		eprintf ("bsize is bigger than `bm`. dimmed to 0x%x > 0x%x\n",
 			bsize, core->blocksize_max);
 		bsize = core->blocksize_max;
 	}
-	bump = realloc (core->block, bsize+1);
-	if (bump == NULL) {
+	bump = realloc (core->block, bsize + 1);
+	if (!bump) {
 		eprintf ("Oops. cannot allocate that much (%u)\n", bsize);
 		ret = false;
 	} else {
@@ -1700,12 +1731,17 @@ R_API int r_core_seek_align(RCore *core, ut64 align, int times) {
 		return false;
 	}
 	diff = core->offset%align;
-	if (times == 0) {
+	if (!times) {
 		diff = -diff;
 	} else if (diff) {
-		if (inc>0) diff += align-diff;
-		else diff = -diff;
-		if (times) times -= inc;
+		if (inc > 0) {
+			diff += align-diff;
+		} else {
+			diff = -diff;
+		}
+		if (times) {
+			times -= inc;
+		}
 	}
 	while ((times*inc) > 0) {
 		times -= inc;
@@ -1748,12 +1784,12 @@ static void rap_break (void *u) {
 R_API int r_core_serve(RCore *core, RIODesc *file) {
 	ut8 cmd, flg, *ptr = NULL, buf[1024];
 	RSocket *c, *fd;
-	int i, pipefd;
+	int i, pipefd = -1;
 	RIORap *rior;
 	ut64 x;
 
 	rior = (RIORap *)file->data;
-	if (rior == NULL|| rior->fd == NULL) {
+	if (!rior|| !rior->fd) {
 		eprintf ("rap: cannot listen.\n");
 		return -1;
 	}
@@ -1771,7 +1807,7 @@ reaccept:
 		if (core->cons->breaked) {
 			return -1;
 		}
-		if (c == NULL) {
+		if (!c) {
 			eprintf ("rap: cannot accept\n");
 			/*r_socket_close (c);*/
 			r_socket_free (c);
@@ -1789,7 +1825,6 @@ reaccept:
 				}
 				return -1;
 			}
-
 			switch ((ut8)cmd) {
 			case RMT_OPEN:
 				r_socket_read_block (c, &flg, 1); // flags
@@ -1798,7 +1833,7 @@ reaccept:
 				pipefd = -1;
 				ptr = malloc (cmd + 1);
 				//XXX cmd is ut8..so <256 if (cmd<RMT_MAX)
-				if (ptr == NULL) {
+				if (!ptr) {
 					eprintf ("Cannot malloc in rmt-open len = %d\n", cmd);
 				} else {
 					RCoreFile *file;
@@ -1903,13 +1938,18 @@ reaccept:
 				if (ptr) {
 					r_core_block_read (core);
 					ptr[0] = RMT_READ | RMT_REPLY;
-					if (i>RMT_MAX)
+					if (i > RMT_MAX) {
 						i = RMT_MAX;
-					if (i>core->blocksize)
+					}
+					if (i > core->blocksize) {
 						r_core_block_size (core, i);
-					r_write_be32 (ptr+1, i);
+					}
+					if (i + 128 < core->blocksize) {
+						r_core_block_size (core, i);
+					}
+					r_write_be32 (ptr + 1, i);
 					memcpy (ptr + 5, core->block, i); //core->blocksize);
-					r_socket_write (c, ptr, i+5);
+					r_socket_write (c, ptr, i + 5);
 					r_socket_flush (c);
 					free (ptr);
 					ptr = NULL;
@@ -1930,7 +1970,7 @@ reaccept:
 				/* read */
 				r_socket_read_block (c, (ut8*)&bufr, 4);
 				i = r_read_be32 (bufr);
-				if (i>0 && i < RMT_MAX) {
+				if (i > 0 && i < RMT_MAX) {
 					if ((cmd = malloc (i + 1))) {
 						r_socket_read_block (c, (ut8*)cmd, i);
 						cmd[i] = '\0';
@@ -1981,7 +2021,6 @@ reaccept:
 					once = false;
 				}
 #endif
-
 				bufw = malloc (cmd_len + 5);
 				bufw[0] = RMT_CMD | RMT_REPLY;
 				r_write_be32 (bufw + 1, cmd_len);
@@ -2026,14 +2065,13 @@ reaccept:
 				r_socket_flush (c);
 				break;
 			case RMT_CLOSE:
-				eprintf ("CLOSE\n");
 				// XXX : proper shutdown
 				r_socket_read_block (c, buf, 4);
 				i = r_read_be32 (buf);
 				{
 				//FIXME: Use r_socket_close
 				int ret = close (i);
-				r_write_be32 (buf+1, ret);
+				r_write_be32 (buf + 1, ret);
 				buf[0] = RMT_CLOSE | RMT_REPLY;
 				r_socket_write (c, buf, 5);
 				r_socket_flush (c);
@@ -2056,27 +2094,30 @@ reaccept:
 R_API int r_core_search_cb(RCore *core, ut64 from, ut64 to, RCoreSearchCallback cb) {
 	int ret, len = core->blocksize;
 	ut8 *buf;
-	if ((buf = malloc (len)) == NULL)
-		eprintf ("Cannot allocate blocksize\n");
-	else while (from<to) {
-		ut64 delta = to-from;
-		if (delta<len)
-			len = (int)delta;
-		if (!r_io_read_at (core->io, from, buf, len)) {
-			eprintf ("Cannot read at 0x%"PFMT64x"\n", from);
-			break;
-		}
-		for (ret=0; ret<len;) {
-			int done = cb (core, from, buf+ret, len-ret);
-			if (done<1) { /* interrupted */
-				free (buf);
-				return false;
+	if ((buf = malloc (len))) {
+		while (from < to) {
+			ut64 delta = to-from;
+			if (delta < len) {
+				len = (int)delta;
 			}
-			ret += done;
+			if (!r_io_read_at (core->io, from, buf, len)) {
+				eprintf ("Cannot read at 0x%"PFMT64x"\n", from);
+				break;
+			}
+			for (ret = 0; ret < len;) {
+				int done = cb (core, from, buf+ret, len-ret);
+				if (done < 1) { /* interrupted */
+					free (buf);
+					return false;
+				}
+				ret += done;
+			}
+			from += len;
 		}
-		from += len;
+		free (buf);
+	} else {
+		eprintf ("Cannot allocate blocksize\n");
 	}
-	free (buf);
 	return true;
 }
 

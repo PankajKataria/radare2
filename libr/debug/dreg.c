@@ -41,7 +41,7 @@ R_API int r_debug_reg_sync(RDebug *dbg, int type, int write) {
 				size = dbg->h->reg_read (dbg, i, buf, bufsize);
 				// we need to check against zero because reg_read can return false
 				if (size > 0) {
-					r_reg_set_bytes (dbg->reg, i, buf, R_MIN (size, bufsize));
+					r_reg_set_bytes (dbg->reg, i, buf, size); //R_MIN (size, bufsize));
 			//		free (buf);
 			//		return true;
 				}
@@ -258,7 +258,7 @@ R_API ut64 r_debug_reg_get_err(RDebug *dbg, const char *name, int *err) {
 	}
 	if (role != -1) {
 		name = r_reg_get_name (dbg->reg, role);
-		if (name == NULL || *name == '\0') {
+		if (!name || *name == '\0') {
 			eprintf ("No debug register profile defined for '%s'.\n", pname);
 			if (err) *err = 1;
 			return UT64_MAX;
@@ -278,3 +278,4 @@ R_API ut64 r_debug_num_callback(RNum *userptr, const char *str, int *ok) {
 	// resolve using regnu
 	return r_debug_reg_get_err (dbg, str, ok);
 }
+

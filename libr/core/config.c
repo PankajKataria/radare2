@@ -7,6 +7,61 @@
 #define SETPREF(x,y,z) r_config_node_desc(r_config_set(cfg,x,y), z);
 #define SETCB(w,x,y,z) r_config_node_desc(r_config_set_cb(cfg,w,x,y), z);
 
+/* TODO: use loop here */
+/*------------------------------------------------------------------------------------------*/
+
+static int compareName(const RAnalFunction *a, const RAnalFunction *b) {
+	return a && b && a->name && b->name && strcmp (a->name, b->name);
+}
+
+static int compareNameLen(const RAnalFunction *a, const RAnalFunction *b) {
+	return a && b && a->name && b->name && strlen (a->name) > strlen (b->name);
+}
+
+static int compareAddress(const RAnalFunction *a, const RAnalFunction *b) {
+	return a && b && a->addr && b->addr && a->addr > b->addr;
+}
+
+static int compareType(const RAnalFunction *a, const RAnalFunction *b) {
+	return a && b && a->diff->type && b->diff->type && a->diff->type > b->diff->type;
+}
+
+static int compareSize(const RAnalFunction *a, const RAnalFunction *b) {
+	// return a && b && a->_size < b->_size;
+	return a && b && r_anal_fcn_realsize (a) > r_anal_fcn_realsize (b);
+}
+
+static int compareDist(const RAnalFunction *a, const RAnalFunction *b) {
+	return a && b && a->diff->dist && b->diff->dist && a->diff->dist > b->diff->dist;
+}
+
+static int cb_diff_sort(void *_core, void *_node) {
+	RConfigNode *node = _node;
+	const char *column = node->value;
+	RCore *core = _core;
+	if (column && strcmp (column, "?")) {
+		if (!strcmp (column, "name")) {
+			core->anal->columnSort = (RListComparator)compareName;
+		} else if (!strcmp (column, "namelen")) {
+			core->anal->columnSort = (RListComparator)compareNameLen;
+		} else if (!strcmp (column, "addr")) {
+			core->anal->columnSort = (RListComparator)compareAddress;
+		} else if (!strcmp (column, "type")) {
+			core->anal->columnSort = (RListComparator)compareType;
+		} else if (!strcmp (column, "size")) {
+			core->anal->columnSort = (RListComparator)compareSize;
+		} else if (!strcmp (column, "dist")) {
+			core->anal->columnSort = (RListComparator)compareDist;
+		} else {
+			goto fail;
+		}
+		return true;
+	}
+fail:
+	eprintf ("e diff.sort = [name, namelen, addr, type, size, dist]\n");
+	return false;
+}
+
 static const char *has_esil(RCore *core, const char *name) {
 	RListIter *iter;
 	RAnalPlugin *h;
@@ -28,14 +83,14 @@ static void rasm2_list(RCore *core, const char *arch, int fmt) {
 	RAsmPlugin *h;
 	RListIter *iter;
 	if (fmt == 'j') {
-		r_cons_printf ("{");
+		r_cons_print ("{");
 	}
 	r_list_foreach (a->plugins, iter, h) {
 		if (arch && *arch) {
 			if (h->cpus && !strcmp (arch, h->name)) {
 				char *c = strdup (h->cpus);
 				int n = r_str_split (c, ',');
-				for (i=0;i<n;i++) {
+				for (i = 0; i < n; i++) {
 					r_cons_println (r_str_word_get0 (c, i));
 				}
 				free (c);
@@ -70,7 +125,7 @@ static void rasm2_list(RCore *core, const char *arch, int fmt) {
 		}
 	}
 	if (fmt == 'j') {
-		r_cons_printf ("}\n");
+		r_cons_print ("}\n");
 	}
 }
 
@@ -118,6 +173,13 @@ static int cb_analnopskip (void *user, void *data) {
 	RCore *core = (RCore*) user;
 	RConfigNode *node = (RConfigNode*) data;
 	core->anal->opt.nopskip = node->i_value;
+	return true;
+}
+
+static int cb_analhpskip (void *user, void *data) {
+	RCore *core = (RCore*) user;
+	RConfigNode *node = (RConfigNode*) data;
+	core->anal->opt.hpskip = node->i_value;
 	return true;
 }
 
@@ -400,6 +462,15 @@ static int cb_asmlineswidth(void *user, void *data) {
 	return true;
 }
 
+static int cb_emustr(void *user, void *data) {
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	if (node->i_value) {
+		r_config_set (core->config, "asm.emu", "true");
+	}
+	return true;
+}
+
 static int cb_asm_invhex(void *user, void *data) {
 	RCore *core = (RCore *) user;
 	RConfigNode *node = (RConfigNode *) data;
@@ -516,17 +587,13 @@ static int cb_asmsyntax(void *user, void *data) {
 	if (*node->value == '?') {
 		r_cons_printf ("att\nintel\nmasm\njz\nregnum\n");
 		return false;
-	} else if (!strcmp (node->value, "regnum")) {
-		r_asm_set_syntax (core->assembler, R_ASM_SYNTAX_REGNUM);
-	} else if (!strcmp (node->value, "jz")) {
-		r_asm_set_syntax (core->assembler, R_ASM_SYNTAX_JZ);
-	} else if (!strcmp (node->value, "intel")) {
-		r_asm_set_syntax (core->assembler, R_ASM_SYNTAX_INTEL);
-	} else if (!strcmp (node->value, "masm")) {
-		r_asm_set_syntax (core->assembler, R_ASM_SYNTAX_MASM);
-	} else if (!strcmp (node->value, "att")) {
-		r_asm_set_syntax (core->assembler, R_ASM_SYNTAX_ATT);
-	} else return false;
+	} else {
+		int syntax = r_asm_syntax_from_string (node->value);
+		if (syntax == -1) {
+			return false;
+		}
+		r_asm_set_syntax (core->assembler, syntax);
+	}
 	return true;
 }
 
@@ -537,6 +604,8 @@ static int cb_bigendian(void *user, void *data) {
 	bool isbig = r_asm_set_big_endian (core->assembler, node->i_value);
 	// Set anal endianness the same as asm
 	r_anal_set_big_endian (core->anal, isbig);
+	// the big endian should also be assigned to dbg->bp->endian
+	core->dbg->bp->endian = isbig;
 	// Set printing endian to user's choice
 	core->print->big_endian = node->i_value;
 	return true;
@@ -749,7 +818,10 @@ static int cb_dbgstatus(void *user, void *data) {
 static int cb_dbgbackend(void *user, void *data) {
 	RCore *core = (RCore*) user;
 	RConfigNode *node = (RConfigNode*) data;
-	// XXX: remove this spagetti
+	if (!strcmp (node->value, "?")) {
+		r_debug_plugin_list (core->dbg, 'q');
+		return false;
+	}
 	if (!strcmp (node->value, "bf")) {
 		r_config_set (core->config, "asm.arch", "bf");
 	}
@@ -1070,6 +1142,12 @@ static int cb_screcho(void *user, void *data) {
 	return true;
 }
 
+static int cb_scrflush(void *user, void *data) {
+	RConfigNode *node = (RConfigNode *) data;
+	r_cons_singleton()->flush = node->i_value;
+	return true;
+}
+
 static int cb_exectrap(void *user, void *data) {
 	RConfigNode *node = (RConfigNode *) data;
 	RCore *core = (RCore*) user;
@@ -1222,6 +1300,18 @@ static int cb_rawstr(void *user, void *data) {
 	RCore *core = (RCore *) user;
 	RConfigNode *node = (RConfigNode *) data;
 	core->bin->rawstr = node->i_value;
+	return true;
+}
+
+static int cb_binstrings(void *user, void *data) {
+	const ut32 req = R_BIN_REQ_STRINGS;
+	RCore *core = (RCore *) user;
+	RConfigNode *node = (RConfigNode *) data;
+	if (node->i_value) {
+		core->bin->filter_rules |= req;
+	} else {
+		core->bin->filter_rules &= ~req;
+	}
 	return true;
 }
 
@@ -1456,6 +1546,25 @@ static int cb_linesabs(void *user, void *data) {
 	return true;
 }
 
+static char *getViewerPath() {
+	int i;
+	const char *viewers[] = {
+		"open",
+		"geeqie",
+		"gqview",
+		"eog",
+		"xdg-open"
+	};
+	for (i = 0; viewers[i]; i++) {
+		char *dotPath = r_file_path (viewers[i]);
+		if (dotPath && strcmp (dotPath, viewers[i])) {
+			return dotPath;
+		}
+		free (dotPath);
+	}
+	return NULL;
+}
+
 #define SLURP_LIMIT (10*1024*1024)
 R_API int r_core_config_init(RCore *core) {
 	int i;
@@ -1491,6 +1600,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF("anal.vinfun", "false",  "Search values in functions (aav) (false by default to only find on non-code)");
 	SETPREF("anal.vinfunrange", "false",  "Search values outside function ranges (requires anal.vinfun=false)\n");
 	SETCB("anal.nopskip", "true", &cb_analnopskip, "Skip nops at the beginning of functions");
+	SETCB("anal.hpskip", "false", &cb_analhpskip, "Skip `mov reg, reg` and `lea reg, [reg] at the beginning of functions");
 	SETCB("anal.bbsplit", "true", &cb_analbbsplit, "Use the experimental basic block split for JMPs");
 	SETCB("anal.noncode", "false", &cb_analnoncode, "Analyze data as code");
 	SETCB("anal.arch", R_SYS_ARCH, &cb_analarch, "Specify the anal.arch to use");
@@ -1533,11 +1643,11 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF("asm.cmtright", "true", "Show comments at right of disassembly if they fit in screen");
 	SETI("asm.cmtcol", 70, "Align comments at column 60");
 	SETICB("asm.pcalign", 0, &cb_asm_pcalign, "Only recognize as valid instructions aligned to this value");
-	SETPREF("asm.calls", "false", "Show calling convention calls as comments in disasm");
+	SETPREF("asm.calls", "true", "Show callee function related info as comments in disasm");
 	SETPREF("asm.bbline", "false", "Show empty line after every basic block");
 	SETPREF("asm.comments", "true", "Show comments in disassembly view");
 	SETPREF("asm.jmphints", "true", "Show jump hints [numbers] in disasm");
-	SETPREF("asm.leahints", "true", "Show LEA hints [numbers] in disasm");
+	SETPREF("asm.leahints", "false", "Show LEA hints [numbers] in disasm");
 	SETPREF("asm.slow", "true", "Perform slow analysis operations in disasm");
 	SETPREF("asm.decode", "false", "Use code analysis as a disassembler");
 	SETPREF("asm.flgoff", "false", "Show offset in flags");
@@ -1547,7 +1657,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF("asm.esil", "false", "Show ESIL instead of mnemonic");
 	SETPREF("asm.nodup", "false", "Do not show dupped instructions (collapse disasm)");
 	SETPREF("asm.emu", "false", "Run ESIL emulation analysis on disasm");
-	SETPREF("asm.emustr", "false", "Show only strings if any in the asm.emu output");
+	SETCB("asm.emustr", "false", &cb_emustr, "Show only strings if any in the asm.emu output");
 	SETPREF("asm.emuwrite", "false", "Allow asm.emu to modify memory (WARNING)");
 	SETPREF("asm.filter", "true", "Replace numeric values by flags (e.g. 0x4003e0 -> sym.imp.printf)");
 	SETPREF("asm.fcnlines", "true", "Show function boundary lines");
@@ -1581,7 +1691,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF("asm.vars", "true", "Show local function variables in disassembly");
 	SETPREF("asm.varxs", "false", "Show accesses of local variables");
 	SETPREF("asm.varsub", "true", "Substitute variables in disassembly");
-	SETPREF("asm.relsub", "false", "Substitute pc relative expressions in disasm");
+	SETPREF("asm.relsub", "true", "Substitute pc relative expressions in disasm");
 	SETPREF("asm.cmtfold", "false", "Fold comments, toggle with Vz");
 	SETPREF("asm.family", "false", "Show family name in disasm");
 	SETPREF("asm.symbol", "false", "Show symbol+delta instead of absolute offset");
@@ -1626,8 +1736,16 @@ R_API int r_core_config_init(RCore *core) {
 	SETICB("bin.maxstrbuf", 1024*1024*10, & cb_binmaxstrbuf, "Maximum size of range to load strings from");
 	SETCB("bin.prefix", NULL, &cb_binprefix, "Prefix all symbols/sections/relocs with a specific string");
 	SETCB("bin.rawstr", "false", &cb_rawstr, "Load strings from raw binaries");
-	SETPREF("bin.strings", "true", "Load strings from rbin on startup");
+	SETCB("bin.strings", "true", &cb_binstrings, "Load strings from rbin on startup");
 	SETPREF("bin.classes", "true", "Load classes from rbin on startup");
+	SETPREF("bin.mergeflags", "true", "Merge symbols with the same name into the same flag");
+
+	/* prj */
+	SETPREF("prj.name", "", "Name of current project");
+	SETPREF("prj.files", "false", "Save the target binary inside the project directory");
+	SETPREF("prj.git", "false", "Every project is a git repo and saving is commiting");
+	SETPREF("prj.zip", "false", "Use ZIP format for project files");
+	SETPREF("prj.gpg", "false", "TODO: Encrypt project with GnuPGv2");
 
 	/* cfg */
 	SETPREF("cfg.plugins", "true", "Load plugins at startup");
@@ -1650,11 +1768,15 @@ R_API int r_core_config_init(RCore *core) {
 	SETCB("cfg.sandbox", "false", &cb_cfgsanbox, "Sandbox mode disables systems and open on upper directories");
 	SETPREF("cfg.wseek", "false", "Seek after write");
 	SETCB("cfg.bigendian", "false", &cb_bigendian, "Use little (false) or big (true) endianness");
+	SETI("cfg.minzlen", 2, "Minimum zignature length to filter in 'zg'");
+	SETI("cfg.maxzlen", 500, "Maximum zignature length to filter in 'zg'");
 
 	/* diff */
+	SETCB("diff.sort", "addr", &cb_diff_sort, "Specify function diff sorting column see (e diff.sort=?)");
 	SETI("diff.from", 0, "Set source diffing address for px (uses cc command)");
 	SETI("diff.to", 0, "Set destination diffing address for px (uses cc command)");
 	SETPREF("diff.bare", "false", "Never show function names in diff output");
+	SETPREF("diff.levenstein", "false", "Use faster (and buggy) levenstein algorithm for buffer distance diffing");
 
 	/* dir */
 	SETPREF("dir.magic", R_MAGIC_PATH, "Path to r_magic files");
@@ -1717,19 +1839,28 @@ R_API int r_core_config_init(RCore *core) {
 	SETICB("dbg.trace.tag", 0, &cb_tracetag, "Trace tag");
 
 	/* cmd */
-	if (r_file_exists ("/usr/bin/xdot")) {
-		r_config_set (cfg, "cmd.graph", "!xdot a.dot");
-	} else if (r_file_exists ("/usr/bin/open")) {
-		r_config_set (cfg, "cmd.graph", "!dot -Tgif -oa.gif a.dot;!open a.gif");
-	} else if (r_file_exists ("/usr/bin/gqview")) {
-		r_config_set (cfg, "cmd.graph", "!dot -Tgif -oa.gif a.dot;!gqview a.gif");
-	} else if (r_file_exists ("/usr/bin/eog")) {
-		r_config_set (cfg, "cmd.graph", "!dot -Tgif -oa.gif a.dot;!eog a.gif");
-	} else if (r_file_exists ("/usr/bin/xdg-open")) {
-		r_config_set (cfg, "cmd.graph", "!dot -Tgif -oa.gif a.dot;!xdg-open a.gif");
+	char *xdotPath = r_file_path ("xdot");
+	if (r_file_exists (xdotPath)) {
+		r_config_set (cfg, "cmd.graph", "ag $$ > a.dot;!xdot a.dot");
 	} else {
-		r_config_set (cfg, "cmd.graph", "?e cannot find a valid picture viewer");
+		char *dotPath = r_file_path ("dot");
+		if (r_file_exists (dotPath)) {
+			R_FREE (dotPath);
+			char *viewer = getViewerPath();
+			if (viewer) {
+				char *cmd = r_str_newf ("ag $$>a.dot;!dot -Tgif -oa.gif a.dot;!%s a.gif", viewer);
+				r_config_set (cfg, "cmd.graph", cmd);
+				free (viewer);
+				free (cmd);
+			} else {
+				r_config_set (cfg, "cmd.graph", "?e cannot find a valid picture viewer");
+			}
+		} else {
+			r_config_set (cfg, "cmd.graph", "agf");
+		}
+		free (dotPath);
 	}
+	free (xdotPath);
 	r_config_desc (cfg, "cmd.graph", "Command executed by 'agv' command to view graphs");
 	SETPREF("cmd.xterm", "xterm -bg black -fg gray -e", "xterm command to spawn with V@");
 	SETICB("cmd.depth", 10, &cb_cmddepth, "Maximum command depth");
@@ -1764,6 +1895,8 @@ R_API int r_core_config_init(RCore *core) {
 	SETICB("hex.stride", 0, &cb_hexstride, "Line stride in hexdump (default is 0)");
 
 	/* http */
+	SETPREF("http.log", "true", "Show HTTP requests processed");
+	SETPREF("http.logfile", "", "Specify a log file instead of stderr for http requests");
 	SETPREF("http.cors", "false", "Enable CORS");
 	SETPREF("http.referer", "", "CSFR protection if set");
 	SETPREF("http.dirlist", "false", "Enable directory listing");
@@ -1823,7 +1956,7 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF("graph.gv.edge", "", "Graphviz edge style. (arrowhead=\"vee\")");
 	SETPREF("graph.gv.graph", "", "Graphviz global style attributes. (bgcolor=white)");
 	SETPREF("graph.gv.current", "false", "Highlight the current node in graphviz graph.");
-	SETPREF("graph.nodejmps", "false", "Enables shortcuts for every node.");
+	SETPREF("graph.nodejmps", "true", "Enables shortcuts for every node.");
 	/* hud */
 	SETPREF("hud.path", "", "Set a custom path for the HUD file");
 
@@ -1841,7 +1974,9 @@ R_API int r_core_config_init(RCore *core) {
 #endif
 	r_config_desc (cfg, "scr.fgets", "Use fgets() instead of dietline for prompt input");
 	SETCB("scr.echo", "false", &cb_screcho, "Show rcons output in realtime to stderr and buffer");
+	SETCB("scr.flush", "false", &cb_scrflush, "Force flush to console in realtime (breaks scripting)");
 	/* TODO: rename to asm.color.ops ? */
+	SETPREF("scr.zoneflags", "true", "Show zoneflags in visual mode before the title (see fz?)");
 	SETPREF("scr.color.ops", "true", "Colorize numbers and registers in opcodes");
 	SETPREF("scr.color.bytes", "true", "Colorize bytes that represent the opcodes of the instruction");
 #if __WINDOWS__ && !__CYGWIN__
@@ -1934,7 +2069,6 @@ R_API int r_core_config_init(RCore *core) {
 	SETPREF("file.desc", "", "User defined file description (used by projects)");
 	SETPREF("file.md5", "", "MD5 sum of current file");
 	SETPREF("file.path", "", "Path of current file");
-	SETPREF("file.project", "", "Name of current project");
 	SETPREF("file.sha1", "", "SHA1 hash of current file");
 	SETPREF("file.type", "", "Type of current file");
 	SETCB("file.loadmethod", "fail", &cb_fileloadmethod, "What to do when load addresses overlap: fail, overwrite, or append (next available)");

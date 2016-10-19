@@ -619,6 +619,34 @@ static XtensaOpFn xtensa_op0_fns[] = {
 	xtensa_null_op  /*xtensa_xt_format2_op*/ /*TODO*/
 };
 
+static inline void sign_extend(st32 *value, ut8 bit) {
+	if (*value & (1 << bit)) {
+		*value |= 0xFFFFFFFF << bit;
+	}
+}
+
+static void xtensa_check_stack_op(xtensa_isa isa, xtensa_opcode opcode, xtensa_format format,
+		size_t i, xtensa_insnbuf slot_buffer, RAnalOp *op) {
+	st32 imm;
+	ut32 dst;
+	ut32 src;
+
+	xtensa_operand_get_field (isa, opcode, 0, format, i, slot_buffer, &dst);
+	xtensa_operand_get_field (isa, opcode, 1, format, i, slot_buffer, &src);
+	xtensa_operand_get_field (isa, opcode, 2, format, i, slot_buffer, (ut32 *) &imm);
+
+	// wide form of addi requires sign extension
+	if (opcode == 39) {
+		sign_extend (&imm, 7);
+	}
+
+	// a1 = stack
+	if (dst == 1 && src == 1) {
+		op->val = imm;
+		op->stackop = R_ANAL_STACK_INC;
+	}
+}
+
 static void esil_push_signed_imm(RStrBuf * esil, st32 imm) {
 	if (imm >= 0) {
 		r_strbuf_appendf (esil, "0x%x" CM, imm);
@@ -655,12 +683,6 @@ static void esil_sign_extend(RStrBuf *esil, ut8 bit) {
 	);
 }
 
-static inline void sign_extend(st32 *value, ut8 bit) {
-	if (* value & (1 << bit)) {
-		* value |= 0xFFFFFFFF << bit;
-	}
-}
-
 static void esil_load_imm(xtensa_isa isa, xtensa_opcode opcode, xtensa_format format,
 		size_t i, xtensa_insnbuf slot_buffer, RAnalOp *op) {
 	ut32 offset;
@@ -685,7 +707,7 @@ static void esil_load_imm(xtensa_isa isa, xtensa_opcode opcode, xtensa_format fo
 			: opcode == 83 ? 2 // l16si
 			: opcode == 84 ? 4 // l32i
 			: opcode == 31 ? 4 // l32i.n
-			: opcode == 86 ? 1 : 1; // l8ui
+			: 1; // opcode == 86 ? 1 : 1; // l8ui
 
 	sign_extend_bit = 0;
 
@@ -742,21 +764,24 @@ static void esil_load_relative(xtensa_isa isa, xtensa_opcode opcode, xtensa_form
 	xtensa_regfile dst_rf = xtensa_operand_regfile (isa, opcode, 0);
 
 	// example: l32r a2, 0x10
-	//          0x10,pc,-, // address on stack
-	//			0xFFFFFFFC,& // clear 3 lsb
+	//          0x10,$$,3,+ // l32r address + 3 on stack
+	//          0xFFFFFFFC,&, // clear 2 lsb
+	//          -, // subtract offset
 	//          [4], // read data
-	//			a2, // push data reg
-	//			= // assign to data reg
+	//          a2, // push data reg
+	//          = // assign to data reg
 
 	offset = - ((offset | 0xFFFF0000) << 2);
 
 	r_strbuf_appendf (
 		&op->esil,
 			"0x%x" 		CM
-			"pc"   		CM
-			"-"    		CM
+			"$$"   		CM
+			"3"		CM
+			"+"		CM
 			"0xFFFFFFFC"	CM
 			"&" 		CM
+			"-"    		CM
 			"[4]"		CM
 			"%s%d" 		CM
 			"=",
@@ -825,7 +850,7 @@ static void esil_store_imm(xtensa_isa isa, xtensa_opcode opcode, xtensa_format f
 		: opcode == 36 ? 4 // s32i.n
 		: opcode == 100 ? 4 // s32i
 		: opcode == 99 ? 2 // s16i
-		: opcode == 101 ? 1 : 1; // s8i
+		: 1; // opcode == 101 ? 1 : 1; // s8i
 
 	switch (opcode) {
 	case 100: // s32i
@@ -1565,6 +1590,13 @@ static void esil_callx(xtensa_isa isa, xtensa_opcode opcode,
 	xtensa_operand_get_field (isa, opcode, 0, format, i, slot_buffer, &dst_reg);
 	xtensa_regfile dst_rf = xtensa_operand_regfile (isa, opcode, 0);
 
+	r_strbuf_appendf (
+		&op->esil,
+		"%s%d" CM "0" CM "+" CM,
+		xtensa_regfile_shortname (isa, dst_rf),
+		dst_reg
+	);
+
 	if (callx) {
 		r_strbuf_append (
 			&op->esil,
@@ -1574,14 +1606,7 @@ static void esil_callx(xtensa_isa isa, xtensa_opcode opcode,
 		);
 	}
 
-	r_strbuf_appendf (
-		&op->esil,
-			"%s%d"	CM
-			"pc"	CM
-			"=",
-		xtensa_regfile_shortname (isa, dst_rf),
-		dst_reg
-	);
+	r_strbuf_append (&op->esil, "$jt" CM "=");
 }
 
 static void esil_set_shift_amount(xtensa_isa isa, xtensa_opcode opcode,
@@ -1725,6 +1750,7 @@ static void esil_extract_unsigned(xtensa_isa isa, xtensa_opcode opcode,
 }
 
 static void analop_esil (RAnal *a, RAnalOp *op, ut64 addr, ut8 *buffer, size_t len) {
+	unsigned int i;
 	if (!xtensa_default_isa) {
 		xtensa_default_isa = xtensa_isa_init (0, 0);
 	}
@@ -1733,7 +1759,6 @@ static void analop_esil (RAnal *a, RAnalOp *op, ut64 addr, ut8 *buffer, size_t l
 	xtensa_isa isa = xtensa_default_isa;
 	xtensa_format format;
 	ut32 nslots;
-	size_t i;
 
 	static xtensa_insnbuf insn_buffer = NULL;
 	static xtensa_insnbuf slot_buffer = NULL;
@@ -1795,6 +1820,7 @@ static void analop_esil (RAnal *a, RAnalOp *op, ut64 addr, ut8 *buffer, size_t l
 			break;
 		case 27: /* addi.n */
 		case 39: /* addi */
+			xtensa_check_stack_op (isa, opcode, format, i, slot_buffer, op);
 			esil_add_imm (isa, opcode, format, i, slot_buffer, op);
 			break;
 		case 98: /* ret */
@@ -1906,7 +1932,7 @@ static void analop_esil (RAnal *a, RAnalOp *op, ut64 addr, ut8 *buffer, size_t l
 }
 
 static int xtensa_op (RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *buf, int len) {
-	if (op == NULL)
+	if (!op)
 		return 1;
 	memset (op, 0, sizeof (RAnalOp));
 	r_strbuf_init (&op->esil);

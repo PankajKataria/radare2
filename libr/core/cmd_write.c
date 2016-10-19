@@ -408,27 +408,28 @@ static int cmd_write(void *data, const char *input) {
 		"w"," foobar","write string 'foobar'",
 		"w0"," [len]","write 'len' bytes with value 0x00",
 		"w6","[de] base64/hex","write base64 [d]ecoded or [e]ncoded string",
-		"wa"," push ebp","write opcode, separated by ';' (use '\"' around the command)",
+		"wa","[?] push ebp","write opcode, separated by ';' (use '\"' around the command)",
 		"waf"," file","assemble file and write bytes",
 		"wao"," op","modify opcode (change conditional of jump. nop, etc)",
 		"wA"," r 0","alter/modify opcode at current seek (see wA?)",
 		"wb"," 010203","fill current block with cyclic hexpairs",
 		"wB","[-]0xVALUE","set or unset bits with given value",
 		"wc","","list all write changes",
-		"wc","[ir*?]","write cache undo/commit/reset/list (io.cache)",
+		"wc","[?][ir*?]","write cache undo/commit/reset/list (io.cache)",
 		"wd"," [off] [n]","duplicate N bytes from offset at current seek (memcpy) (see y?)",
 		"we","[nNsxX] [arg]","extend write operations (insert instead of replace)",
 		"wf"," -|file","write contents of file at current offset",
 		"wh"," r2","whereis/which shell command",
 		"wm"," f0ff","set binary mask hexpair to be used as cyclic write mask",
-		"wo?"," hex","write in block with operation. 'wo?' fmi",
+		"wo","[?] hex","write in block with operation. 'wo?' fmi",
 		"wp"," -|file","apply radare patch file. See wp? fmi",
 		"wr"," 10","write 10 random bytes",
 		"ws"," pstring","write 1 byte for length and then the string",
-		"wt"," file [sz]","write to file (from current seek, blocksize or sz bytes)",
+		"wt[f]"," file [sz]","write to file (from current seek, blocksize or sz bytes)",
+		"wts"," host:port", "send data to remote host:port via tcp://",
 		"ww"," foobar","write wide string 'f\\x00o\\x00o\\x00b\\x00a\\x00r\\x00'",
-		"wx[fs]"," 9090","write two intel nops (from wxfile or wxseek)",
-		"wv"," eip+34","write 32-64 bit value",
+		"wx","[?][fs] 9090","write two intel nops (from wxfile or wxseek)",
+		"wv","[?] eip+34","write 32-64 bit value",
 		"wz"," string","write zero terminated string (like w + \\x00)",
 		NULL
 	};
@@ -920,13 +921,64 @@ static int cmd_write(void *data, const char *input) {
 		r_core_block_read (core);
 		break;
 	case 't': // "wt"
-		if (*str == '?' || *str == '\0') {
+		if (*str == 's') { // "wts"
+			if (str[1] == ' ') {
+				eprintf ("Write to server\n");
+				st64 sz = r_io_size (core->io);
+				if (sz > 0) {
+					ut64 addr = 0;
+					char *host = str + 2;
+					char *port = strchr (host, ':');
+					if (port) {
+						*port ++= 0;
+						char *space = strchr (port, ' ');
+						if (space) {
+							*space++ = 0;
+							sz = r_num_math (core->num, space);
+							addr = core->offset;
+						}
+						ut8 *buf = calloc (1, sz);
+						if (space) {
+							(void)r_io_vread (core->io, addr, buf, sz);
+						} else {
+							(void)r_io_pread (core->io, addr, buf, sz);
+						}
+						RSocket *s = r_socket_new (false);
+						if (r_socket_connect (s, host, port, R_SOCKET_PROTO_TCP, 0)) {
+							int done = 0;
+							eprintf ("Transfering file to the end-point...\n");
+							while (done < sz) {
+								int rc = r_socket_write (s, buf + done, sz - done);
+								if (rc <1) {
+									eprintf ("oops\n");
+									break;
+								}
+								done += rc;
+							}
+						} else {
+							eprintf ("Cannot connect\n");
+						}
+						r_socket_free (s);
+						free (buf);
+					} else {
+						eprintf ("Usage wts host:port [sz]\n");
+					}
+				} else {
+					eprintf ("Unknown file size\n");
+				}
+			} else {
+				eprintf ("Usage wts host:port [sz]\n");
+			}
+		} else if (*str == '?' || *str == '\0') {
 			eprintf ("Usage: wt[a] file [size]   write 'size' bytes in current block to file\n");
 			free (ostr);
 			return 0;
 		} else {
 			int append = 0;
 			st64 sz = core->blocksize;
+			if (*str=='f') { // "wtf"
+				str++;
+			} else
 			if (*str=='a') { // "wta"
 				append = 1;
 				str++;
@@ -1016,7 +1068,7 @@ static int cmd_write(void *data, const char *input) {
 			break;
 		case 's': // "wxs"
 			{
-				int len = cmd_write_hexpair (core, input + 1);
+				int len = cmd_write_hexpair (core, input + 2);
 				if (len > 0) {
 					r_core_seek_delta (core, len);
 					core->num->value = len;

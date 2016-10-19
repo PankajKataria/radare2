@@ -9,6 +9,9 @@ include ../mk/${COMPILER}.mk
 # Build against last capstone release or next
 CS_RELEASE=0
 
+CAPSTONE_CFLAGS?=-g
+# CAPSTONE_MAKEFLAGS?=CAPSTONE_ARCHS="arm aarch64"
+
 GIT?=git
 WGET?=wget
 
@@ -20,9 +23,9 @@ CS_PATCHES=0
 else
 CS_TAR=
 CS_URL=$(GIT_PREFIX)github.com/aquynh/capstone.git
-CS_UPD=20160828
+CS_UPD=20161017
 CS_BRA=next
-CS_TIP=87a25bb543c8e4c09b48d4b4a6c7db31ce58df06
+CS_TIP=d14504d5fadf6e81184907513f5fd8668f3305be
 # REVERT THIS COMMIT BECAUSE ITS WRONG
 CS_REV=
 CS_PATCHES=1
@@ -103,7 +106,7 @@ ${SDB_TARGETS}:
 	@echo
 	$(MAKE) -C sdb clean
 	$(MAKE) -C sdb src/sdb_version.h
-	$(MAKE) -C sdb/src CC=${HOST_CC} CFLAGS='${HOST_CFLAGS} -fPIC' bin
+	$(MAKE) -C sdb/src CC=${HOST_CC} LDFLAGS='${HOST_LDFLAGS}' CPPFLAGS='' CFLAGS='${HOST_CFLAGS} -fPIC' bin
 	cp -f sdb/src/sdb${BUILD_EXT_EXE} sdb/src/.sdb${BUILD_EXT_EXE}
 	@echo
 	@echo ">>>>>>>>>>>>>>>>"
@@ -242,8 +245,6 @@ endif
 .PHONY: capstone
 endif
 
-CAPSTONE_CFLAGS=-g
-
 ifeq (${EXT_AR},)
 all:
 	echo EXT_AR is not defined
@@ -252,7 +253,7 @@ endif
 
 capstone-build: capstone
 	cd capstone && CFLAGS="-Dmips=mips ${CAPSTONE_CFLAGS} $(CFLAGS)" LDFLAGS="$(LDFLAGS)" \
-		$(MAKE) CC="$(CC)" AR_EXT=a IS_CYGWIN=0 CAPSTONE_STATIC=yes CAPSTONE_SHARED=no \
+		$(MAKE) $(CAPSTONE_MAKEFLAGS) CC="$(CC)" AR_EXT=a IS_CYGWIN=0 CAPSTONE_STATIC=yes CAPSTONE_SHARED=no \
 		RANLIB="$(RANLIB)" AR="$(AR)" IS_MINGW=0 libcapstone.a
 ifneq (${EXT_AR},a)
 	-cp -f capstone/libcapstone.a capstone/libcapstone.${EXT_AR}

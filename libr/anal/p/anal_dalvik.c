@@ -6,10 +6,11 @@
 #include <r_anal.h>
 
 #include "../../asm/arch/dalvik/opcode.h"
+#include "../../bin/format/dex/dex.h" 
 
 static int dalvik_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *data, int len) {
 	int sz = dalvik_opcodes[data[0]].len;
-	if (op == NULL)
+	if (!op)
 		return sz;
 
 	memset (op, '\0', sizeof (RAnalOp));
@@ -55,13 +56,15 @@ static int dalvik_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *data, int l
 			op->ptr = vA;
 			break;
 		case 0x1a: // const-string
-		case 0x1c: // const-class
 			op->type = R_ANAL_OP_TYPE_MOV;
 			{
 				ut32 vB = (data[3]<<8) | data[2];
-				ut64 offset = R_ANAL_GET_OFFSET(anal, 's', vB);
+				ut64 offset = R_ANAL_GET_OFFSET (anal, 's', vB);
 				op->ptr = offset;
 			}
+			break;
+		case 0x1c: // const-class
+			op->type = R_ANAL_OP_TYPE_MOV;
 			break;
 		case 0x85: // long-to-float
 		case 0x8e: // double-to-int
@@ -71,6 +74,7 @@ static int dalvik_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *data, int l
 		case 0x8c: // double-to-float
 		case 0x8b: // double-to-long
 		case 0x88: // float-to-long
+		case 0x86: // long-to-double
 			op->family = R_ANAL_OP_FAMILY_FPU;
 			/* pass thru */
 		case 0x81: // int-to-long
@@ -145,6 +149,7 @@ static int dalvik_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *data, int l
 		case 0x50: //
 		case 0x51: // aput-short
 		case 0x68: // sput-wide
+		case 0x6a: // sput-boolean
 		case 0x6c: // sput-wide
 		case 0xfe: // sput
 			op->type = R_ANAL_OP_TYPE_STORE;
@@ -397,6 +402,11 @@ static int set_reg_profile(RAnal *anal) {
 	return r_reg_set_profile_string (anal->reg, p);
 }
 
+static bool is_valid_offset(RAnal *anal, ut64 addr, int hasperm) {
+	RBinDexObj *bin_dex = (RBinDexObj*) anal->binb.bin->cur->o->bin_obj;
+	return addr >= bin_dex->code_from && addr <= bin_dex->code_to;
+}
+
 struct r_anal_plugin_t r_anal_plugin_dalvik = {
 	.name = "dalvik",
 	.arch = "dalvik",
@@ -405,6 +415,7 @@ struct r_anal_plugin_t r_anal_plugin_dalvik = {
 	.bits = 32,
 	.desc = "Dalvik (Android VM) bytecode analysis plugin",
 	.op = &dalvik_op,
+	.is_valid_offset = &is_valid_offset
 };
 
 #ifndef CORELIB

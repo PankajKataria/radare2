@@ -36,8 +36,9 @@ R_API void r_parse_free(RParse *p) {
 }
 
 R_API int r_parse_add(RParse *p, RParsePlugin *foo) {
-	if (foo->init)
+	if (foo->init) {
 		foo->init (p->user);
+	}
 	r_list_append (p->parsers, foo);
 	return true;
 }
@@ -69,9 +70,9 @@ R_API int r_parse_assemble(RParse *p, char *data, char *str) {
 			if (!ret) break;
 			if (s) {
 				str = s + 1;
-				o = o+strlen (data);
-				o[0]='\n';
-				o[1]='\0';
+				o = o + strlen (data);
+				o[0] = '\n';
+				o[1] = '\0';
 				o++;
 			}
 		} while (s);
@@ -130,8 +131,9 @@ static char *findNextNumber(char *op) {
 				if (!is_space) {
 					is_space = (p != op && (*o == ' ' || *o == ',' || *o == '['));
 				}
-				if (is_space && *p >= '0' && *p <= '9')
+				if (is_space && *p >= '0' && *p <= '9') {
 					return p;
+				}
 				o = p++;
 			}
 		}
@@ -282,9 +284,11 @@ static int filter(RParse *p, RFlag *f, char *data, char *str, int len, bool big_
 				if (p && p->anal && p->anal->syscall) {
 					RSyscallItem *si;
 					si = r_syscall_get (p->anal->syscall, off, -1);
-					if (si)
+					if (si) {
 						snprintf (num, sizeof (num), "%s()", si->name);
-					else snprintf (num, sizeof (num), "unknown()");
+					} else {
+						snprintf (num, sizeof (num), "unknown()");
+					}
 				}
 				break;
 			case 16:

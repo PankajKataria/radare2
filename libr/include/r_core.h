@@ -167,6 +167,7 @@ typedef struct r_core_t {
 	char *lastsearch;
 	bool fixedblock;
 	char *cmdfilter;
+	bool break_loop;
 } RCore;
 
 R_API int r_core_bind(RCore *core, RCoreBind *bnd);
@@ -292,8 +293,7 @@ R_API ut32 r_core_file_cur_fd (RCore *core);
 R_API void r_core_debug_rr (RCore *core, RReg *reg);
 
 /* project */
-R_API void r_core_project_load(RCore *core, const char *prjfile);
-R_API bool r_core_project_load_xrefs(RCore *core, const char *prjfile);
+R_API bool r_core_project_load(RCore *core, const char *prjfile, const char *rcfile);
 
 #define R_CORE_FOREIGN_ADDR -1
 R_API int r_core_yank(RCore *core, ut64 addr, int len);
@@ -403,7 +403,7 @@ R_API int r_core_bin_load(RCore *core, const char *file, ut64 baseaddr);
 R_API int r_core_hash_load(RCore *core, const char *file);
 R_API int r_core_bin_list(RCore *core, int mode);
 R_API int r_core_bin_raise (RCore *core, ut32 binfile_idx, ut32 obj_idx);
-R_API int r_core_bin_delete (RCore *core, ut32 binfile_idx, ut32 binobj_idx);
+R_API bool r_core_bin_delete (RCore *core, ut32 binfile_idx, ut32 binobj_idx);
 
 // XXX - this is kinda hacky, maybe there should be a way to
 // refresh the bin environment without specific calls?

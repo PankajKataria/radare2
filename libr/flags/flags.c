@@ -15,6 +15,26 @@ R_LIB_VERSION(r_flag);
 #define ISNULLSTR(x) (!(x) || !*(x))
 #define IS_IN_SPACE(f, i) ((f)->space_idx != -1 && (i)->space != (f)->space_idx)
 
+static const char *str_callback(RNum *user, ut64 off, int *ok) {
+	RList *list;
+	RFlag *f = (RFlag*)user;
+	RFlagItem *item;
+	if (ok) {
+		*ok = 0;
+	}
+	if (f) {
+		list = r_hashtable64_lookup (f->ht_off, XOROFF (off));
+		item = r_list_get_top (list);
+		if (item) {
+			if (ok) {
+				*ok = true;
+			}
+			return item->name;
+		}
+	}
+	return NULL;
+}
+
 static ut64 num_callback(RNum *user, const char *name, int *ok) {
 	RFlag *f = (RFlag*)user;
 	RFlagItem *item;
@@ -65,13 +85,18 @@ R_API RFlag * r_flag_new() {
 	int i;
 	RFlag *f = R_NEW0 (RFlag);
 	if (!f) return NULL;
-	f->num = r_num_new (&num_callback, f);
+	f->num = r_num_new (&num_callback, &str_callback, f);
 	if (!f->num) {
 		r_flag_free (f);
 		return NULL;
 	}
 	f->base = 0;
 	f->cb_printf = (PrintfCallback)printf;
+#if R_FLAG_ZONE_USE_SDB
+	f->zones = sdb_new0 ();
+#else
+	f->zones = NULL;
+#endif
 	f->flags = r_list_new ();
 	if (!f->flags) {
 		r_flag_free (f);
@@ -86,6 +111,11 @@ R_API RFlag * r_flag_new() {
 	}
 	f->ht_name = r_hashtable64_new ();
 	f->ht_off = r_hashtable64_new ();
+#if R_FLAG_ZONE_USE_SDB
+	sdb_free (f->zones);
+#else
+	r_list_free (f->zones);
+#endif
 	f->ht_off->free = (RHashFree)r_list_free;
 	for (i = 0; i < R_FLAG_SPACES_MAX; i++) {
 		f->spaces[i] = NULL;
@@ -251,6 +281,26 @@ static RFlagItem *evalFlag(RFlag *f, RFlagItem *item) {
 	return item;
 }
 
+/* return true if flag.* exist at offset. Otherwise, false is returned.
+ * For example (f, "sym", 3, 0x1000)*/
+R_API bool r_flag_exist_at(RFlag *f, const char *flag_prefix, ut16 fp_size, ut64 off) {
+	RListIter *iter = NULL;
+	RFlagItem *item = NULL;
+	if (!f) {
+		return false;
+	}
+	RList *list = r_hashtable64_lookup (f->ht_off, XOROFF (off));
+	if (!list) {
+		return false;
+	}
+	r_list_foreach (list, iter, item) {
+		if (item->name && !strncmp (item->name, flag_prefix, fp_size)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /* return the flag item with name "name" in the RFlag "f", if it exists.
  * Otherwise, NULL is returned. */
 R_API RFlagItem *r_flag_get(RFlag *f, const char *name) {
@@ -373,7 +423,7 @@ R_API RFlagItem *r_flag_set(RFlag *f, const char *name, ut64 off, ut32 size) {
 	item->size = size;
 
 	list = r_hashtable64_lookup (f->ht_off, XOROFF(off));
-	if (list == NULL) {
+	if (!list) {
 		list = r_list_new ();
 		r_hashtable64_insert (f->ht_off, XOROFF(off), list);
 	}
@@ -489,20 +539,18 @@ R_API int r_flag_unset_name(RFlag *f, const char *name) {
 /* unset all flag items in the RFlag f */
 R_API void r_flag_unset_all(RFlag *f) {
 	f->space_idx = -1;
-
 	r_list_free (f->flags);
 	f->flags = r_list_new ();
-	if (!f->flags) return;
+	if (!f->flags) {
+		return;
+	}
 	f->flags->free = (RListFree)r_flag_item_free;
-
 	r_hashtable64_free (f->ht_name);
 	//don't set free since f->flags will free up items when needed avoiding uaf
 	f->ht_name = r_hashtable64_new ();
-
 	r_hashtable64_free (f->ht_off);
 	f->ht_off = r_hashtable64_new ();
 	f->ht_off->free = (RHashFree)r_list_free;
-
 	r_flag_space_unset (f, NULL);
 }
 
@@ -569,6 +617,7 @@ R_API const char *r_flag_color(RFlag *f, RFlagItem *it, const char *color) {
 // BIND
 R_API int r_flag_bind(RFlag *f, RFlagBind *fb) {
 	fb->f = f;
+	fb->exist_at = r_flag_exist_at;
 	fb->get = r_flag_get;
 	fb->get_at = r_flag_get_at;
 	fb->set = r_flag_set;

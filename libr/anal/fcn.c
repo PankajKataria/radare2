@@ -15,6 +15,7 @@
 
 // 16 KB is the maximum size for a basic block
 #define MAXBBSIZE 16 * 1024
+#define MAX_FLG_NAME_SIZE 64
 
 #define FIX_JMP_FWD 0
 #define JMP_IS_EOB 1
@@ -113,6 +114,7 @@ R_API RAnalFunction *r_anal_fcn_new() {
 	fcn->refs = r_anal_ref_list_new ();
 	fcn->xrefs = r_anal_ref_list_new ();
 #endif
+	fcn->fcn_locs = NULL;
 	fcn->bbs = r_anal_bb_list_new ();
 	fcn->fingerprint = NULL;
 	fcn->diff = r_anal_diff_new ();
@@ -140,7 +142,8 @@ R_API void r_anal_fcn_free(void *_fcn) {
 	r_list_free (fcn->refs);
 	r_list_free (fcn->xrefs);
 #endif
-	r_list_free (fcn->locs);
+	//all functions are freed in anal->fcns
+	fcn->fcn_locs = NULL;
 	if (fcn->bbs) {
 		fcn->bbs->free = (RListFree)r_anal_bb_free;
 		r_list_free (fcn->bbs);
@@ -321,7 +324,7 @@ static ut64 search_reg_val(RAnal *anal, ut8 *buf, ut64 len, ut64 addr, char *reg
 		if ((oplen = r_anal_op (anal, &op, addr + offs, buf + offs, len - offs)) < 1) {
 			break;
 		}
-		if (op.dst && op.dst->reg && !strcmp(op.dst->reg->name, regsz)) {
+		if (op.dst && op.dst->reg && op.dst->reg->name && !strcmp(op.dst->reg->name, regsz)) {
 			if (op.src[0]) ret = op.src[0]->delta;
 		}
 	}
@@ -414,11 +417,35 @@ static bool is_delta_pointer_table (RAnal *anal, ut64 ptr) {
 	return true;
 }
 
+static bool regs_exist(RAnalValue *src, RAnalValue *dst) {
+	return src && dst && src->reg && dst->reg && src->reg->name && dst->reg->name;
+}
+
+//0 if not skipped; 1 if skipped; 2 if skipped before
+static int skip_hp(RAnal *anal, RAnalFunction *fcn, RAnalOp *op, RAnalBlock *bb, ut64 addr,
+				   char *tmp_buf, int oplen, int un_idx, int *idx) {
+	//this step is required in order to prevent infinite recursion in some cases
+	if ((addr + un_idx - oplen) == fcn->addr) {
+		if (!anal->flb.exist_at (anal->flb.f, "skip", 4, op->addr)) {
+			snprintf (tmp_buf + 5, MAX_FLG_NAME_SIZE - 6, "%"PFMT64u, op->addr);
+			anal->flb.set (anal->flb.f, tmp_buf, op->addr, oplen);
+			fcn->addr += oplen;
+			bb->size -= oplen;
+			bb->addr += oplen;
+			*idx = un_idx;
+			return 1;
+		}
+		return 2;
+	}
+	return 0;
+}
+
 static int fcn_recurse(RAnal *anal, RAnalFunction *fcn, ut64 addr, ut8 *buf, ut64 len, int depth) {
 	int continue_after_jump = anal->opt.afterjmp;
+	int noncode = anal->opt.noncode;
 	RAnalBlock *bb = NULL;
 	RAnalBlock *bbg = NULL;
-	int ret = R_ANAL_RET_END;
+	int ret = R_ANAL_RET_END, skip_ret = 0;
 	int overlapped = 0;
 	char *varname;
 	RAnalOp op = {0};
@@ -431,6 +458,7 @@ static int fcn_recurse(RAnal *anal, RAnalFunction *fcn, ut64 addr, ut8 *buf, ut6
 		int adjust;
 		int un_idx; // delay.un_idx
 	} delay = {0};
+	char tmp_buf[MAX_FLG_NAME_SIZE + 5] = "skip";
 
 	if (anal->sleep) {
 		r_sys_usleep (anal->sleep);
@@ -439,6 +467,10 @@ static int fcn_recurse(RAnal *anal, RAnalFunction *fcn, ut64 addr, ut8 *buf, ut6
 	if (depth < 1) {
 		eprintf ("That's too deep\n");
 		return R_ANAL_RET_ERROR; // MUST BE TOO DEEP
+	}
+
+	if (!noncode && anal->cur->is_valid_offset && !anal->cur->is_valid_offset (anal, addr, 0)) {
+		return R_ANAL_RET_END;
 	}
 
 	// check if address is readable //:
@@ -596,19 +628,43 @@ repeat:
 			r_anal_fcn_xref_add (anal, fcn, op.addr, op.ptr, R_ANAL_REF_TYPE_DATA);
 		}
 
-		switch (op.type) {
+		switch (op.type & R_ANAL_OP_TYPE_MASK) {
+		case R_ANAL_OP_TYPE_MOV:
+			//skip mov reg,reg
+			if (anal->opt.hpskip && regs_exist(op.src[0], op.dst)
+					&& !strcmp (op.src[0]->reg->name, op.dst->reg->name)) {
+				skip_ret = skip_hp (anal, fcn, &op, bb, addr, tmp_buf, oplen, delay.un_idx, &idx);
+				if (skip_ret == 1) {
+					goto repeat;
+				}
+				if (skip_ret == 2) {
+					return R_ANAL_RET_END;
+				}
+			}
+			break;
 		case R_ANAL_OP_TYPE_LEA:
+			//skip lea reg,[reg]
+			if (anal->opt.hpskip && regs_exist(op.src[0], op.dst)
+					&& !strcmp (op.src[0]->reg->name, op.dst->reg->name)) {
+				skip_ret = skip_hp (anal, fcn, &op, bb, addr, tmp_buf, oplen, delay.un_idx, &idx);
+				if (skip_ret == 1) {
+					goto repeat;
+				}
+				if (skip_ret == 2) {
+					return R_ANAL_RET_END;
+				}
+			}
 			if (anal->opt.jmptbl) {
 				if (is_delta_pointer_table (anal, op.ptr)) {
 					anal->cb_printf ("pxt. 0x%08"PFMT64x" @ 0x%08"PFMT64x"\n", op.addr, op.ptr);
 					//jmptbl_addr = op.ptr;
 					//jmptbl_size = -1;
-			//		ret = try_walkthrough_jmptbl (anal, fcn, depth, op.addr, op.ptr, 4);
+					//ret = try_walkthrough_jmptbl (anal, fcn, depth, op.addr, op.ptr, 4);
 				}
 			}
 			break;
 		case R_ANAL_OP_TYPE_ILL:
-			if (anal->opt.nopskip && !memcmp (buf, "\x00\x00\x00\x00", 4)) {
+			if (anal->opt.nopskip && len > 3 && !memcmp (buf, "\x00\x00\x00\x00", 4)) {
 				if ((addr + delay.un_idx-oplen) == fcn->addr) {
 					fcn->addr += oplen;
 					bb->size -= oplen;
@@ -640,20 +696,36 @@ repeat:
 			return R_ANAL_RET_END;
 		case R_ANAL_OP_TYPE_NOP:
 			if (anal->opt.nopskip) {
-				RFlagItem *fi = anal->flb.get_at (anal->flb.f, addr);
-				// do not skip nops if there's a flag at starting address
-				if (!fi || strncmp (fi->name, "sym.", 4)) {
-					if ((addr + delay.un_idx - oplen) == fcn->addr) {
-						fcn->addr += oplen;
-						bb->size -= oplen;
-						bb->addr += oplen;
-						idx = delay.un_idx;
+				if (!strcmp (anal->cur->arch, "mips")) {
+					//Looks like this flags check is useful only for mips
+					// do not skip nops if there's a flag at starting address
+					RFlagItem *fi = anal->flb.get_at (anal->flb.f, addr);
+					if (!fi || strncmp (fi->name, "sym.", 4)) {
+						if ((addr + delay.un_idx - oplen) == fcn->addr) {
+							fcn->addr += oplen;
+							bb->size -= oplen;
+							bb->addr += oplen;
+							idx = delay.un_idx;
+							goto repeat;
+						}
+					}
+				} else {
+					skip_ret = skip_hp (anal, fcn, &op, bb, addr, tmp_buf, oplen, delay.un_idx, &idx);
+					if (skip_ret == 1) {
 						goto repeat;
+					}
+					if (skip_ret == 2) {
+						return R_ANAL_RET_END;
 					}
 				}
 			}
 			break;
 		case R_ANAL_OP_TYPE_JMP:
+			if (op.jump == UT64_MAX) {
+				FITFCNSZ ();
+				r_anal_op_fini (&op);
+				return R_ANAL_RET_END;
+			}
 			if (anal->opt.jmpref) {
 				(void) r_anal_fcn_xref_add (anal, fcn, op.addr, op.jump, R_ANAL_REF_TYPE_CODE);
 			}
@@ -807,11 +879,31 @@ repeat:
 			// For some reason, branch delayed code (MIPS) needs to continue
 			break;
 		case R_ANAL_OP_TYPE_UCALL:
+		case R_ANAL_OP_TYPE_RCALL:
+		case R_ANAL_OP_TYPE_ICALL:
+		case R_ANAL_OP_TYPE_IRCALL:
 			/* call [dst] */
 			if (op.ptr != UT64_MAX && r_anal_noreturn_at (anal, op.ptr)) {
 				FITFCNSZ ();
 				r_anal_op_fini (&op);
 				return R_ANAL_RET_END;
+			}
+			// XXX: this is TYPE_MCALL or indirect-call
+			{
+				(void)r_anal_fcn_xref_add (anal, fcn, op.addr, op.ptr, R_ANAL_REF_TYPE_CALL);
+#if 0
+				char buf[8];
+				ut64 dst = UT64_MAX;
+				anal->iob.read_at (anal->iob.io, op.ptr, buf, sizeof (buf));
+				if (anal->bits == 64) {
+					dst = r_read_le64 (buf);
+				} else {
+					dst = r_read_le64 (buf);
+				}
+				if (anal->iob.is_valid_offset (anal->iob.io, dst, 0)) {
+					(void)r_anal_fcn_xref_add (anal, fcn, op.addr, dst, R_ANAL_REF_TYPE_CALL);
+				}
+#endif
 			}
 			break;
 		case R_ANAL_OP_TYPE_CCALL:
@@ -831,6 +923,9 @@ repeat:
 			break;
 		case R_ANAL_OP_TYPE_MJMP:
 		case R_ANAL_OP_TYPE_UJMP:
+		case R_ANAL_OP_TYPE_RJMP:
+		case R_ANAL_OP_TYPE_IJMP:
+		case R_ANAL_OP_TYPE_IRJMP:
 			// switch statement
 			if (anal->opt.jmptbl) {
 				if (fcn->refs->tail) {
@@ -864,7 +959,7 @@ repeat:
 				}
 			}
 			FITFCNSZ ();
-			
+
 			r_anal_op_fini (&op);
 			return R_ANAL_RET_END;
 river:
@@ -873,6 +968,10 @@ river:
 		case R_ANAL_OP_TYPE_PUSH:
 			last_is_push = true;
 			last_push_addr = op.val;
+			/* consider DATA refs to code as CODE referencs */
+			if (anal->iob.is_valid_offset (anal->iob.io, op.val, 1)) {
+				(void)r_anal_fcn_xref_add (anal, fcn, op.addr, op.val, R_ANAL_REF_TYPE_CODE);
+			}
 			break;
 		case R_ANAL_OP_TYPE_RET:
 			if (op.family == R_ANAL_OP_FAMILY_PRIV) {
@@ -1053,7 +1152,8 @@ R_API int r_anal_fcn(RAnal *anal, RAnalFunction *fcn, ut64 addr, ut8 *buf, ut64 
 
 // TODO: need to implement r_anal_fcn_remove(RAnal *anal, RAnalFunction *fcn);
 R_API int r_anal_fcn_insert(RAnal *anal, RAnalFunction *fcn) {
-	RAnalFunction *f = r_anal_get_fcn_in (anal, fcn->addr, R_ANAL_FCN_TYPE_ROOT);
+	//RAnalFunction *f = r_anal_get_fcn_in (anal, fcn->addr, R_ANAL_FCN_TYPE_ROOT);
+	RAnalFunction *f = r_anal_get_fcn_at (anal, fcn->addr, R_ANAL_FCN_TYPE_ROOT);
 	if (f) {
 		return false;
 	}
@@ -1282,7 +1382,7 @@ R_API int r_anal_fcn_add_bb(RAnal *anal, RAnalFunction *fcn, ut64 addr, ut64 siz
 			bbi->size = addr - (bbi->addr);
 		}
 	}
-	if (bb == NULL) {
+	if (!bb) {
 		bb = appendBasicBlock (anal, fcn, addr);
 		if (!bb) {
 			eprintf ("appendBasicBlock failed\n");
@@ -1572,11 +1672,34 @@ R_API ut32 r_anal_fcn_size(const RAnalFunction *fcn) {
  * basicblocks this function is composed of.
  * IMPORTANT: this will become, one day, the only size of a function */
 R_API ut32 r_anal_fcn_realsize(const RAnalFunction *fcn) {
+	RListIter *iter, *fiter;
+	RAnalBlock *bb;
+	RAnalFunction *f;
+	ut32 sz = 0;
+	r_list_foreach (fcn->bbs, iter, bb) {
+		sz += bb->size;
+	}
+	r_list_foreach (fcn->fcn_locs, fiter, f) {
+		r_list_foreach (f->bbs, iter, bb) {
+			sz += bb->size;
+		}
+	}
+	return sz;
+}
+
+//continious function size without loc.*
+R_API ut32 r_anal_fcn_contsize(const RAnalFunction *fcn) {
 	RListIter *iter;
 	RAnalBlock *bb;
 	ut32 sz = 0;
 	r_list_foreach (fcn->bbs, iter, bb) {
-		sz += bb->size;
+		/* TODO: this if is an ugly hack and should be removed when r2 will be
+		 * able to handle BBs that comes before the function emtry point.
+		 * Another way to remove this is to throw away BBs before the function
+		 * entry point at the analysis time in the r_anal_fcn.   */
+		if (bb->addr >= fcn->addr) {
+			sz += bb->size;
+		}
 	}
 	return sz;
 }

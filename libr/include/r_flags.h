@@ -16,6 +16,22 @@ R_LIB_VERSION_HEADER(r_flag);
 #define R_FLAG_NAME_SIZE 512
 #define R_FLAG_SPACES_MAX 128
 
+/* zones.c */
+
+#define R_FLAG_ZONE_USE_SDB 0
+
+typedef struct r_flag_zone_item_t {
+	ut64 from;
+	ut64 to;
+#if R_FLAG_ZONE_USE_SDB
+	const char *name;
+#else
+	char *name;
+#endif
+} RFlagZoneItem;
+
+/* flag.c */
+
 typedef struct r_flag_item_t {
 	char *name;     /* unique name, escaped to avoid issues with r2 shell */
 	char *realname; /* real name, without any escaping */
@@ -39,10 +55,16 @@ typedef struct r_flag_t {
 	RList *flags;   /* list of RFlagItem contained in the flag */
 	RList *spacestack;
 	PrintfCallback cb_printf;
+#if R_FLAG_ZONE_USE_SDB
+	Sdb *zones;
+#else
+	RList *zones;
+#endif
 } RFlag;
 
 /* compile time dependency */
 
+typedef bool (*RFlagExistAt)(RFlag *f, const char *flag_prefix, ut16 fp_size, ut64 off);
 typedef RFlagItem* (*RFlagGet)(RFlag *f, const char *name);
 typedef RFlagItem* (*RFlagGetAt)(RFlag *f, ut64 addr);
 typedef RFlagItem* (*RFlagSet)(RFlag *f, const char *name, ut64 addr, ut32 size);
@@ -51,6 +73,7 @@ typedef int (*RFlagSetSpace)(RFlag *f, const char *name);
 typedef struct r_flag_bind_t {
 	int init;
 	RFlag *f;
+	RFlagExistAt exist_at;
 	RFlagGet get;
 	RFlagGetAt get_at;
 	RFlagSet set;
@@ -64,6 +87,7 @@ R_API int r_flag_bind(RFlag *io, RFlagBind *bnd);
 R_API RFlag * r_flag_new(void);
 R_API RFlag * r_flag_free(RFlag *f);
 R_API void r_flag_list(RFlag *f, int rad, const char *pfx);
+R_API bool r_flag_exist_at(RFlag *f, const char *flag_prefix, ut16 fp_size, ut64 off);
 R_API RFlagItem *r_flag_get(RFlag *f, const char *name);
 R_API RFlagItem *r_flag_get_i(RFlag *f, ut64 off);
 R_API RFlagItem *r_flag_get_i2(RFlag *f, ut64 off);
@@ -97,6 +121,16 @@ R_API int r_flag_space_list(RFlag *f, int mode);
 R_API int r_flag_space_rename (RFlag *f, const char *oname, const char *nname);
 R_API int r_flag_space_pop(RFlag *f);
 R_API int r_flag_space_push(RFlag *f, const char *name);
+
+/* zones */
+
+R_API void r_flag_zone_item_free(void *a);
+R_API bool r_flag_zone_add(RFlag *fz, const char *name, ut64 addr);
+R_API bool r_flag_zone_del(RFlag *fz, const char *name);
+R_API bool r_flag_zone_around(RFlag *fz, ut64 addr, const char **prev, const char **next);
+R_API bool r_flag_zone_list(RFlag *fz, int mode);
+R_API bool r_flag_zone_reset(RFlag *f);
+
 #endif
 
 #ifdef __cplusplus

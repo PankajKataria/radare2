@@ -524,20 +524,25 @@ R_API int r_print_string(RPrint *p, ut64 seek, const ut8 *buf, int len, int opti
 	//if (p->flags & R_PRINT_FLAGS_OFFSET)
 		// r_print_addr(p, seek);
 	p->interrupt = 0;
-	for (i=0; !p->interrupt && i<len; i++) {
-		if (zeroend && buf[i]=='\0')
+	for (i = 0; !p->interrupt && i < len; i++) {
+		if (zeroend && buf[i] == '\0') {
 			break;
+		}
 		r_print_cursor (p, i, 1);
 		if (urlencode) {
 			// TODO: some ascii can be bypassed here
 			p->cb_printf ("%%%02x", buf[i]);
 		} else {
-			if (buf[i]=='\n' || IS_PRINTABLE (buf[i]))
+			if (buf[i]=='\n' || IS_PRINTABLE (buf[i])) {
 				p->cb_printf ("%c", buf[i]);
-			else p->cb_printf ("\\x%02x", buf[i]);
+			} else {
+				p->cb_printf ("\\x%02x", buf[i]);
+			}
 		}
 		r_print_cursor (p, i, 0);
-		if (wide) i++;
+		if (wide) {
+			i++;
+		}
 	}
 	p->cb_printf ("\n");
 	return i;
@@ -719,6 +724,9 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 	//for (i=j=0; (p&&!p->interrupt) && i<len; i+=(stride?stride:inc), j+=(stride?stride:0)) {
 	for (i=j=0; i<len; i+=(stride?stride:inc), j+=(stride?stride:0)) {
 		r_print_set_screenbounds (p, addr + i);
+		if (p && p->cons && p->cons->breaked) {
+			break;
+		}
 		if (use_sparse) {
 			if (check_sparse (buf+i, inc, sparse_char)) {
 				if (i+inc>=len || check_sparse (buf+i+inc, inc, sparse_char)) {
@@ -1038,9 +1046,9 @@ R_API void r_print_zoom (RPrint *p, void *user, RPrintZoomCallback cb, ut64 from
 	} else {
 		mode = p->zoom->mode;
 		bufz = (ut8 *) malloc (len);
-		if (bufz == NULL) return;
+		if (!bufz) return;
 		bufz2 = (ut8 *) malloc (size);
-		if (bufz2 == NULL) {
+		if (!bufz2) {
 			free (bufz);
 			return;
 		}
@@ -1188,25 +1196,25 @@ R_API void r_print_fill(RPrint *p, const ut8 *arr, int size, ut64 addr, int step
 	}
 }
 
-R_API void r_print_2bpp_row(RPrint *p, ut8 *buf)
-{
+R_API void r_print_2bpp_row(RPrint *p, ut8 *buf) {
 	int i, c = 0;
 	char *color;
-	for (i=0; i<8; i++) {
+	for (i = 0; i < 8; i++) {
 		if (buf[1] & ((1<<7)>>i) ) c = 2;
 		if (buf[0] & ((1<<7)>>i) ) c++;
 		switch (c) {
-			case 0:
-				color = Color_BGWHITE;
+		case 0:
+			color = Color_BGWHITE;
 			break;
-			case 1:
-				color = Color_BGRED;
+		case 1:
+			color = Color_BGRED;
 			break;
-			case 2:
-				color = Color_BGBLUE;
+		case 2:
+			color = Color_BGBLUE;
 			break;
-			case 3:
-				color = Color_BGBLACK;
+		case 3:
+			color = Color_BGBLACK;
+			break;
 		}
 		p->cb_printf("%s  ", color);
 		c = 0;
@@ -1224,7 +1232,7 @@ R_API void r_print_2bpp_tiles(RPrint *p, ut8 *buf, ut32 tiles)
 }
 
 R_API const char * r_print_color_op_type ( RPrint *p, ut64 anal_type) {
-	switch (anal_type) {
+	switch (anal_type & R_ANAL_OP_TYPE_MASK) {
 	case R_ANAL_OP_TYPE_NOP:
 		return p->cons->pal.nop;
 	case R_ANAL_OP_TYPE_ADD:
@@ -1250,6 +1258,9 @@ R_API const char * r_print_color_op_type ( RPrint *p, ut64 anal_type) {
 		return p->cons->pal.swi;
 	case R_ANAL_OP_TYPE_JMP:
 	case R_ANAL_OP_TYPE_UJMP:
+	case R_ANAL_OP_TYPE_IJMP:
+	case R_ANAL_OP_TYPE_RJMP:
+	case R_ANAL_OP_TYPE_IRJMP:
 	case R_ANAL_OP_TYPE_MJMP:
 		return p->cons->pal.jmp;
 	case R_ANAL_OP_TYPE_CJMP:
@@ -1260,6 +1271,9 @@ R_API const char * r_print_color_op_type ( RPrint *p, ut64 anal_type) {
 	case R_ANAL_OP_TYPE_ACMP:
 		return p->cons->pal.cmp;
 	case R_ANAL_OP_TYPE_UCALL:
+	case R_ANAL_OP_TYPE_ICALL:
+	case R_ANAL_OP_TYPE_RCALL:
+	case R_ANAL_OP_TYPE_IRCALL:
 	case R_ANAL_OP_TYPE_UCCALL:
 	case R_ANAL_OP_TYPE_CALL:
 	case R_ANAL_OP_TYPE_CCALL:
@@ -1305,25 +1319,26 @@ R_API char * r_print_colorize_opcode (char *p, const char *reg, const char *num)
 	int is_jmp = p && (*p == 'j' || ((*p == 'c') && (p[1] == 'a')))? 1: 0;
 	ut32 opcode_sz = p && *p ? strlen (p)*10 + 1 : 0;
 
-	if (!p || !*p) return NULL;
-	if (is_jmp)
+	if (!p || !*p) {
+		return NULL;
+	}
+	if (is_jmp) {
 		return strdup (p);
-
+	}
 	if (opcode_sz > COLORIZE_BUFSIZE) {
 		/* return same string in case of error */
 		return strdup (p);
 	}
 
 	memset (o, 0, COLORIZE_BUFSIZE);
-
-	for (i=j=0; p[i]; i++,j++) {
+	for (i = j = 0; p[i]; i++,j++) {
 		/* colorize numbers */
 		/*
 		if (j+100 >= opcode_sz) {
 			o = realloc_color_buffer (o, &opcode_sz, 100);
 		}
 		*/
-		if (j+100 >= COLORIZE_BUFSIZE) {
+		if (j + 100 >= COLORIZE_BUFSIZE) {
 			eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 			return strdup (p);
 		}
@@ -1334,13 +1349,15 @@ R_API char * r_print_colorize_opcode (char *p, const char *reg, const char *num)
 #define STRIP_ANSI 1
 #if STRIP_ANSI
 			/* skip until 'm' */
-			for (++i;p[i] && p[i]!='m'; i++)
+			for (++i;p[i] && p[i] != 'm'; i++) {
 				o[j] = p[i];
+			}
 			continue;
 #else
 			/* copy until 'm' */
-			for (;p[i] && p[i]!='m'; i++)
+			for (; p[i] && p[i] != 'm'; i++) {
 				o[j++] = p[i];
+			}
 			o[j++] = p[i++];
 #endif
 		case '+':
@@ -1355,36 +1372,43 @@ R_API char * r_print_colorize_opcode (char *p, const char *reg, const char *num)
 		case ']':
 		case '[':
 		case ',':
+			/* ugly trick for dalvik */
+			if (p[i + 1] == ' ' && p[i + 2] == 'L') {
+				strcpy (o + j, num);
+				j += strlen (num);
+				strcpy (o + j , p + i);
+				return strdup (o);
+			}
 			if (is_float) {
 				/* do nothing, keep going until next */
 				is_float = 0;
 			} else if (is_arg) {
 				/* if (c_reset+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, c_reset+100); */
-				if (c_reset+j+10 >= COLORIZE_BUFSIZE) {
+				if (c_reset + j + 10 >= COLORIZE_BUFSIZE) {
 					eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 					return strdup (p);
 				}
 				strcpy (o+j, Color_RESET);
 				j += strlen (Color_RESET);
 				o[j++] = p[i];
-				if (p[i]=='$' || ((p[i] > '0') && (p[i] < '9'))) {
+				if (p[i] == '$' || ((p[i] > '0') && (p[i] < '9'))) {
 					ut32 num_len = strlen (num);
 					/* if (num_len+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, num_len+100); */
-					if (num_len+j+10 >= COLORIZE_BUFSIZE) {
+					if (num_len + j + 10 >= COLORIZE_BUFSIZE) {
 						eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 						return strdup (p);
 					}
-					strcpy (o+j, num);
-					j += strlen (num)-1;
+					strcpy (o + j, num);
+					j += strlen (num) - 1;
 				} else {
 					ut32 reg_len = strlen (reg);
 					/* if (reg_len+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, reg_len+100); */
-					if (reg_len+j+10 >= COLORIZE_BUFSIZE) {
+					if (reg_len + j + 10 >= COLORIZE_BUFSIZE) {
 						eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 						return strdup (p);
 					}
 					strcpy (o+j, reg);
-					j += strlen (reg)-1;
+					j += strlen (reg) - 1;
 				}
 				continue;
 			}
@@ -1396,43 +1420,46 @@ R_API char * r_print_colorize_opcode (char *p, const char *reg, const char *num)
 			is_mod = 0;
 			is_float = 0;
 			for (k = i+1; p[k]; k++) {
-				if (p[k]=='e' && p[k+1]=='+') {
+				if (p[k] == 'e' && p[k + 1] == '+') {
 					is_float = 1;
 					break;
 				}
-				if (p[k]==' ')
+				if (p[k] == ' ') {
 					break;
-				if (p[k]==',') {
+				}
+				if (p[k] == ',') {
 					is_mod = 1;
 					break;
 				}
 			}
 			if (is_float) {
-				strcpy (o+j, num);
+				strcpy (o + j, num);
 				j += strlen (num);
 			}
-			if (!p[k]) is_mod = 1;
+			if (!p[k]) {
+				is_mod = 1;
+			}
 			if (!is_jmp && is_mod) {
 				// COLOR FOR REGISTER
 				ut32 reg_len = strlen (reg);
 				/* if (reg_len+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, reg_len+100); */
-				if (reg_len+j+10 >= COLORIZE_BUFSIZE) {
+				if (reg_len + j + 10 >= COLORIZE_BUFSIZE) {
 					eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 					return strdup (p);
 				}
-				strcpy (o+j, reg);
+				strcpy (o + j, reg);
 				j += strlen (reg);
 			}
 			break;
 		case '0': /* address */
-			if (!is_jmp && p[i+1]== 'x') {
+			if (!is_jmp && p[i + 1] == 'x') {
 				ut32 num_len = strlen (num);
 				/* if (num_len+j+10 >= opcode_sz) o = realloc_color_buffer (o, &opcode_sz, num_len+100); */
-				if (num_len+j+10 >= COLORIZE_BUFSIZE) {
+				if (num_len + j + 10 >= COLORIZE_BUFSIZE) {
 					eprintf ("r_print_colorize_opcode(): buffer overflow!\n");
 					return strdup (p);
 				}
-				strcpy (o+j, num);
+				strcpy (o + j, num);
 				j += strlen (num);
 			}
 			break;
@@ -1440,7 +1467,7 @@ R_API char * r_print_colorize_opcode (char *p, const char *reg, const char *num)
 		o[j] = p[i];
 	}
 	// decolorize at the end
-	if (j+20 >= opcode_sz) {
+	if (j + 20 >= opcode_sz) {
 		char *t_o = o;
 		/* o = malloc (opcode_sz+21); */
 		memmove (o, t_o, opcode_sz);

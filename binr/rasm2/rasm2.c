@@ -476,9 +476,16 @@ int main (int argc, char *argv[]) {
 			if (fd != -1) dup2 (fd, 1);
 			break;
 		case 's':
-			if (!strcmp (optarg, "att"))
-				r_asm_set_syntax (a, R_ASM_SYNTAX_ATT);
-			else r_asm_set_syntax (a, R_ASM_SYNTAX_INTEL);
+			if (*optarg == '?') {
+				printf ("att\nintel\nmasm\njz\nregnum\n");
+				return false;
+			} else {
+				int syntax = r_asm_syntax_from_string (optarg);
+				if (syntax == -1) {
+					return false;
+				}
+				r_asm_set_syntax (a, syntax);
+			}
 			break;
 		case 'v':
 			if (quiet) {
@@ -616,11 +623,13 @@ int main (int argc, char *argv[]) {
 			do {
 				length = read (0, buf, sizeof (buf) - 1);
 				if (length < 1) break;
-				if (len > 0 && len < length)
+				if (len > 0 && len < length) {
 					length = len;
+				}
 				buf[length] = 0;
-				if ((!bin || !dis) && feof (stdin))
+				if ((!bin || !dis) && feof (stdin)) {
 					break;
+				}
 				if (skip && length > skip) {
 					if (bin) {
 						memmove (buf, buf + skip, length - skip + 1);
@@ -658,8 +667,9 @@ int main (int argc, char *argv[]) {
 				len -= skip;
 				buf[len] = 0;
 			}
-			if (!strncmp (buf, "0x", 2))
+			if (!strncmp (buf, "0x", 2)) {
 				buf += 2;
+			}
 			ret = rasm_disasm ((char *)buf, offset, len,
 					a->bits, ascii, bin, dis - 1);
 		} else if (analinfo) {

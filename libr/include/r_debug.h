@@ -397,7 +397,7 @@ R_API int r_debug_kill_setup(RDebug *dbg, int sig, int action);
 /* handle.c */
 R_API void r_debug_plugin_init(RDebug *dbg);
 R_API int r_debug_plugin_set(RDebug *dbg, const char *str);
-R_API int r_debug_plugin_list(RDebug *dbg);
+R_API int r_debug_plugin_list(RDebug *dbg, int mode);
 R_API bool r_debug_plugin_add(RDebug *dbg, RDebugPlugin *foo);
 
 /* memory */
@@ -495,6 +495,7 @@ extern RDebugPlugin r_debug_plugin_esil;
 extern RDebugPlugin r_debug_plugin_rap;
 extern RDebugPlugin r_debug_plugin_gdb;
 extern RDebugPlugin r_debug_plugin_bf;
+extern RDebugPlugin r_debug_plugin_io;
 extern RDebugPlugin r_debug_plugin_wind;
 extern RDebugPlugin r_debug_plugin_bochs;
 extern RDebugPlugin r_debug_plugin_qnx;

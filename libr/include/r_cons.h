@@ -165,6 +165,7 @@ r_cons_click_clear();
 
 typedef struct r_cons_t {
 	RConsGrep grep;
+	RStack *cons_stack;
 	char *buffer;
 	//int line;
 	int buffer_len;
@@ -219,6 +220,7 @@ typedef struct r_cons_t {
 #if __WINDOWS__ && !__CYGWIN__
 	bool ansicon;
 #endif
+	bool flush;
 } RCons;
 
 // XXX THIS MUST BE A SINGLETON AND WRAPPED INTO RCons */

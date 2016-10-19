@@ -25,7 +25,8 @@ static const char *mousemodes[] = {
 #define MIN_NODE_HEIGTH BORDER_HEIGHT
 #define TITLE_LEN 128
 #define DEFAULT_SPEED 1
-#define PAGEKEY_SPEED 15
+#define PAGEKEY_SPEED (h/2)
+/* 15 */
 #define SMALLNODE_TEXT_CUR "<@@@@@@>"
 #define SMALLNODE_MIN_WIDTH 8
 #define SMALLNODE_TITLE_LEN 4
@@ -367,14 +368,14 @@ static int **get_crossing_matrix (const RGraph *g,
 		}
 	}
 
-	if (n_rows)
+	if (n_rows) {
 		*n_rows = len;
+	}
 	return m;
 
 err_row:
-	for (i = 0; i < len; ++i) {
-		if (m[i])
-			free (m[i]);
+	for (i = 0; i < len; i++) {
+		free (m[i]);
 	}
 	free (m);
 	return NULL;
@@ -2615,6 +2616,7 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 	core->cons->event_resize = (RConsEvent)agraph_refresh;
 
 	while (!exit_graph && !is_error) {
+		w = r_cons_get_size (&h);
 		invscroll = r_config_get_i (core->config, "graph.invscroll");
 		ret = agraph_refresh (grd);
 		if (!ret) {
@@ -2718,7 +2720,7 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 			r_core_seek (core, off, 0);
 			if ((key == 'x' && !r_core_visual_xrefs_x (core)) ||
 				(key == 'X' && !r_core_visual_xrefs_X (core))) {
-				r_core_seek(core, old_off, 0);
+				r_core_seek (core, old_off, 0);
 			}
 			break;
 		}
@@ -2805,7 +2807,11 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 		}
 		case 'R':
 			if (!fcn) break;
-			r_core_cmd0 (core, "ecr");
+			if (r_config_get_i (core->config, "scr.randpal")) {
+				r_core_cmd0 (core, "ecr");
+			} else {
+				r_core_cmd0 (core, "ecn");
+			}
 			g->color_box = core->cons->pal.graph_box;
 			g->color_box2 = core->cons->pal.graph_box2;
 			g->color_box3 = core->cons->pal.graph_box3;
@@ -2864,7 +2870,7 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 			}
 			break;
 		case 'J':
-			if (okey == 27 && r_cons_readchar () == 126) {
+			if (okey == 27) { // && r_cons_readchar () == 126) {
 				// handle page down key
 				can->sy -= PAGEKEY_SPEED * (invscroll ? -1 : 1);
 			} else {
@@ -2872,7 +2878,7 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 			}
 			break;
 		case 'K':
-			if (okey == 27 && r_cons_readchar () == 126) {
+			if (okey == 27) { // && r_cons_readchar () == 126) {
 				// handle page up key
 				can->sy += PAGEKEY_SPEED * (invscroll ? -1 : 1);
 			} else {
@@ -2896,6 +2902,9 @@ R_API int r_core_visual_graph(RCore *core, RAGraph *g, RAnalFunction *_fcn, int 
 			} else {
 				get_anode (g->curnode)->x -= movspeed;
 			}
+			break;
+		case 'v':
+			r_core_visual_anal (core);
 			break;
 		case 'L': get_anode (g->curnode)->x += movspeed; break;
 		case 'j': can->sy -= movspeed * (invscroll ? -1 : 1); break;

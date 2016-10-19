@@ -44,6 +44,10 @@ R_LIB_VERSION_HEADER(r_asm);
 	(x && x->binb.bin && x->binb.get_offset)? \
 		x->binb.get_offset (x->binb.bin, y, z): -1
 
+#define R_ASM_GET_NAME(x,y,z) \
+	(x && x->binb.bin && x->binb.get_name)? \
+		x->binb.get_name (x->binb.bin, y, z): NULL 
+
 enum {
 	R_ASM_SYNTAX_NONE = 0,
 	R_ASM_SYNTAX_INTEL,
@@ -146,6 +150,7 @@ R_API int r_asm_set_bits(RAsm *a, int bits);
 R_API void r_asm_set_cpu(RAsm *a, const char *cpu);
 R_API bool r_asm_set_big_endian(RAsm *a, bool big_endian);
 R_API int r_asm_set_syntax(RAsm *a, int syntax);
+R_API int r_asm_syntax_from_string(const char *name);
 R_API int r_asm_set_pc(RAsm *a, ut64 pc);
 R_API int r_asm_disassemble(RAsm *a, RAsmOp *op, const ut8 *buf, int len);
 R_API int r_asm_assemble(RAsm *a, RAsmOp *op, const char *buf);
@@ -221,7 +226,6 @@ extern RAsmPlugin r_asm_plugin_propeller;
 extern RAsmPlugin r_asm_plugin_msp430;
 extern RAsmPlugin r_asm_plugin_i4004;
 extern RAsmPlugin r_asm_plugin_cris_gnu;
-extern RAsmPlugin r_asm_plugin_z80_cr;
 extern RAsmPlugin r_asm_plugin_lh5801;
 extern RAsmPlugin r_asm_plugin_hppa_gnu;
 extern RAsmPlugin r_asm_plugin_v810;

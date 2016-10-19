@@ -486,7 +486,7 @@ R_API int r_core_bin_load(RCore *r, const char *filenameuri, ut64 baddr) {
 	}
 
 	if (cf) {
-		if ((filenameuri == NULL || !*filenameuri)) {
+		if (!filenameuri || !*filenameuri) {
 			filenameuri = cf->desc->name;
 		} else if (cf->desc->name && strcmp (filenameuri, cf->desc->name)) {
 			// XXX - this needs to be handled appropriately
@@ -682,7 +682,7 @@ R_API RCoreFile *r_core_file_open_many(RCore *r, const char *file, int flags, ut
 	return top_file;
 }
 
-/* loadaddr is r2 -m (mapaddr */
+/* loadaddr is r2 -m (mapaddr) */
 R_API RCoreFile *r_core_file_open(RCore *r, const char *file, int flags, ut64 loadaddr) {
 	ut64 prev = r_sys_now();
 	const char *suppress_warning = r_config_get (r->config, "file.nowarn");
@@ -700,12 +700,14 @@ R_API RCoreFile *r_core_file_open(RCore *r, const char *file, int flags, ut64 lo
 	}
 	r->io->bits = r->assembler->bits; // TODO: we need an api for this
 	fd = r_io_open_nomap (r->io, file, flags, 0644);
-	if (fd == NULL && openmany > 2) {
+	if (!fd && openmany > 2) {
 		// XXX - make this an actual option somewhere?
 		fh = r_core_file_open_many (r, file, flags, loadaddr);
-		if (fh) goto beach;
+		if (fh) {
+			goto beach;
+		}
 	}
-	if (fd == NULL) {
+	if (!fd) {
 		if (flags & 2) {
 			if (!r_io_create (r->io, file, 0644, 0)) {
 				goto beach;
@@ -718,7 +720,9 @@ R_API RCoreFile *r_core_file_open(RCore *r, const char *file, int flags, ut64 lo
 		}
 	}
 	if (r_io_is_listener (r->io)) {
+		r_io_desc_detach (r->io, fd);
 		r_core_serve (r, fd);
+		r_io_desc_free (fd);
 		goto beach;
 	}
 
@@ -768,14 +772,17 @@ beach:
 }
 
 R_API int r_core_files_free(const RCore *core, RCoreFile *cf) {
-	if (!core || !core->files || !cf) return false;
+	if (!core || !core->files || !cf) {
+		return false;
+	}
 	return r_list_delete_data (core->files, cf);
 }
 
 R_API void r_core_file_free(RCoreFile *cf) {
 	int res = 1;
-	if (!cf || !cf->core)
+	if (!cf || !cf->core) {
 		return;
+	}
 	if (cf) {
 		res = r_core_files_free (cf->core, cf);
 	}
@@ -858,8 +865,9 @@ R_API RCoreFile *r_core_file_get_by_fd(RCore *core, int fd) {
 	RCoreFile *file;
 	RListIter *iter;
 	r_list_foreach (core->files, iter, file) {
-		if (file->desc->fd == fd)
+		if (file->desc->fd == fd) {
 			return file;
+		}
 	}
 	return NULL;
 }
@@ -895,18 +903,28 @@ R_API int r_core_file_list(RCore *core, int mode) {
 			r_cons_printf ("o %s 0x%"PFMT64x"\n", f->desc->uri, (ut64)from);
 			break;
 		default:
-			r_cons_printf ("%c %d %s @ 0x%"PFMT64x" ; %s size=%"PFMT64u" %s\n",
+			{
+			ut64 sz = r_io_desc_size (core->io, f->desc);
+			const char *fmt;
+			if (sz == UT64_MAX) {
+				fmt = "%c %d %s @ 0x%"PFMT64x" ; %s size=%"PFMT64d" %s\n";
+			} else {
+				fmt = "%c %d %s @ 0x%"PFMT64x" ; %s size=%"PFMT64u" %s\n";
+			}
+			r_cons_printf (fmt,
 					core->io->raised == f->desc->fd?'*':'-',
 					(int)f->desc->fd, f->desc->uri, (ut64)from,
 					f->desc->flags & R_IO_WRITE? "rw": "r",
 					r_io_desc_size (core->io, f->desc),
 					overlapped?"overlaps":"");
+			}
 			break;
 		}
 		count++;
 	}
-	if (mode=='j')
+	if (mode=='j') {
 		r_cons_printf ("]\n");
+	}
 	return count;
 }
 
@@ -933,8 +951,9 @@ R_API int r_core_file_binlist(RCore *core) {
 	RBin *bin = core->bin;
 	const RList *binfiles = bin ? bin->binfiles: NULL;
 
-	if (!binfiles) return false;
-
+	if (!binfiles) {
+		return false;
+	}
 	r_list_foreach (binfiles, iter, binfile) {
 		int fd = binfile->fd;
 		cf = r_core_file_get_by_fd (core, fd);

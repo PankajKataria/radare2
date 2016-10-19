@@ -20,6 +20,36 @@ struct VarType {
 #define SETKEY(x,y...) snprintf (key, sizeof (key)-1, x, ##y);
 #define SETKEY2(x,y...) snprintf (key2, sizeof (key)-1, x, ##y);
 #define SETVAL(x,y...) snprintf (val, sizeof (val)-1, x, ##y);
+R_API bool r_anal_var_display(RAnal *anal, int delta, char kind, const char *type) {
+	char *fmt = r_anal_type_format (anal, type);
+	RRegItem *i;
+	if (!fmt) {
+		eprintf ("type:%s doesn't exist\n", type);
+		return false;
+	}
+	switch (kind) {
+	case R_ANAL_VAR_KIND_REG:
+		i = r_reg_index_get (anal->reg, delta);
+		if (i) {
+			anal->cb_printf ("pf r (%s)\n", i->name);
+		} else {
+			eprintf ("register not found\n");
+		}
+		break;
+	case R_ANAL_VAR_KIND_BPV:
+		if (delta > 0) {
+			anal->cb_printf ("pf %s @%s+0x%x\n", fmt, anal->reg->name[R_REG_NAME_BP], delta);
+		} else {
+			anal->cb_printf ("pf %s @%s-0x%x\n", fmt, anal->reg->name[R_REG_NAME_BP], -delta);
+		}
+		break;
+	case R_ANAL_VAR_KIND_SPV:
+		anal->cb_printf ("pf %s @ %s+0x%x\n", fmt, anal->reg->name[R_REG_NAME_SP], delta);
+		break;
+	}
+	free (fmt);
+	return true;
+}
 
 R_API int r_anal_var_add(RAnal *a, ut64 addr, int scope, int delta, char kind, const char *type, int size, const char *name) {
 	char *var_def;
@@ -125,6 +155,27 @@ R_API int r_anal_var_retype(RAnal *a, ut64 addr, int scope, int delta, char kind
 			delta = -delta;
 		}
 		sdb_set (DB, name_key, name_val, 0);
+		Sdb *TDB = a->sdb_types;
+		const char* type_kind = sdb_const_get (TDB, type, 0);
+		if (type_kind && r_str_startswith (type_kind, "struct")) {
+			char *field, *field_key, *field_type;
+			int field_n, field_offset;
+			char *type_key = r_str_newf ("%s.%s", type_kind, type);
+			for (field_n = 0;
+				(field = sdb_array_get (TDB, type_key, field_n, NULL));
+				field_n++) {
+				field_key = r_str_newf ("%s.%s", type_key, field);
+				field_type = sdb_array_get (TDB, field_key, 0, NULL);
+				field_offset = sdb_array_get_num (TDB, field_key, 1, NULL);
+				if (field_offset != 0) { // delete variables which are overlayed by structure
+					r_anal_var_delete (a, addr, kind, scope, delta + field_offset);
+				}
+				free (field_type);
+				free (field_key);
+				free (field);
+			}
+			free (type_key);
+		}
 	} else {
 		/* global variable */
 		const char *var_global = sdb_fmt (1, "var.0x%"PFMT64x, fcn->addr);
@@ -353,7 +404,7 @@ R_API int r_anal_var_rename(RAnal *a, ut64 var_addr, int scope, char kind, const
 			eprintf ("Cannot find key in storage.\n");
 			return 0;
 		}
-		if (old_name == NULL) {
+		if (!old_name) {
 			old_name = stored_name;
 		} else if (strcmp (stored_name, old_name)) {
 			eprintf ("Old name missmatch %s vs %s.\n", stored_name, old_name);
@@ -432,7 +483,49 @@ R_API int r_anal_var_count(RAnal *a, RAnalFunction *fcn, int kind, int type) {
 	return count[type];
 }
 
-R_API RList *r_anal_var_list(RAnal *a, RAnalFunction *fcn, int kind) {
+static void var_add_structure_fields_to_list(RAnal *a, RAnalVar *av, const char* base_name, int delta, RList *list) {
+	/* ATTENTION: av->name might be freed and reassigned */
+	Sdb *TDB = a->sdb_types;
+	const char *type_kind = sdb_const_get (TDB, av->type, 0);
+	if (type_kind && r_str_startswith (type_kind, "struct")) {
+		char *field_name, *field_key, *field_type, *new_name;
+		int field_n, field_offset, field_count, field_size;
+		char *type_key = r_str_newf ("%s.%s", type_kind, av->type);
+		for (field_n = 0;
+			(field_name = sdb_array_get (TDB, type_key, field_n, NULL));
+			field_n++) {
+			field_key = r_str_newf ("%s.%s", type_key, field_name);
+			field_type = sdb_array_get (TDB, field_key, 0, NULL);
+			field_offset = sdb_array_get_num (TDB, field_key, 1, NULL);
+			field_count = sdb_array_get_num (TDB, field_key, 2, NULL);
+			field_size = r_anal_type_get_size (a, field_type) * (field_count ? field_count : 1);
+			new_name = r_str_newf ( "%s.%s", base_name, field_name);
+			if (field_offset == 0) {
+				free (av->name);
+				av->name = new_name;
+			} else {
+				RAnalVar *fav = R_NEW0 (RAnalVar);
+				if (!fav) {
+					free (field_key);
+					free (new_name);
+					continue;
+				}
+				fav->delta = delta + field_offset;
+				fav->kind = av->kind;
+				fav->name = new_name;
+				fav->size = field_size;
+				fav->type = strdup (field_type);
+				r_list_append (list, fav);
+			}
+			free (field_type);
+			free (field_key);
+			free (field_name);
+		}
+		free (type_key);
+	}
+}
+
+static RList *var_generate_list(RAnal *a, RAnalFunction *fcn, int kind, bool dynamicVars) {
 	char *varlist;
 	RList *list = NULL;
 	if (!a || !fcn) {
@@ -468,8 +561,8 @@ R_API RList *r_anal_var_list(RAnal *a, RAnalFunction *fcn, int kind) {
 					}
 					if (!vt.name || !vt.type) {
 						//This should be properly fixed
-						eprintf ("Warning null var in fcn.0x%"PFMT64x".%c.%s at %s-%d\n",
-								fcn->addr, kind, word, __FILE__, __LINE__);
+						eprintf ("Warning null var in fcn.0x%"PFMT64x".%c.%s\n",
+								fcn->addr, kind, word);
 						free (av);
 						continue;
 					}
@@ -479,6 +572,9 @@ R_API RList *r_anal_var_list(RAnal *a, RAnalFunction *fcn, int kind) {
 					av->size = vt.size;
 					av->type = strdup (vt.type);
 					r_list_append (list, av);
+					if (dynamicVars) { // make dynamic variables like structure fields
+						var_add_structure_fields_to_list (a, av, vt.name, delta, list);
+					}
 					sdb_fmt_free (&vt, SDB_VARTYPE_FMT);
 				} else {
 					// eprintf ("Cannot find var definition for '%s'\n", word);
@@ -490,6 +586,14 @@ R_API RList *r_anal_var_list(RAnal *a, RAnalFunction *fcn, int kind) {
 	free (varlist);
 	list->free = (RListFree)r_anal_var_free;
 	return list;
+}
+
+R_API RList *r_anal_var_list(RAnal *a, RAnalFunction *fcn, int kind) {
+	return var_generate_list (a, fcn, kind, false);
+}
+
+R_API RList *r_anal_var_list_dynamic(RAnal *a, RAnalFunction *fcn, int kind) {
+	return var_generate_list (a, fcn, kind, true);
 }
 
 static int var_comparator (const RAnalVar *a, const RAnalVar *b){
@@ -533,13 +637,13 @@ R_API void r_anal_var_list_show(RAnal *anal, RAnalFunction *fcn, int kind, int m
 				if (var->delta > 0) {
 					anal->cb_printf ("{\"name\":\"%s\","
 						"\"kind\":\"arg\",\"type\":\"%s\",\"ref\":"
-						"{\"base\":\"%s\", \"offset\":0x%x}}",
+						"{\"base\":\"%s\", \"offset\":%"PFMT64d"}}",
 						var->name, var->type,anal->reg->name[R_REG_NAME_BP],
 						var->delta);
 				} else {
 					anal->cb_printf ("{\"name\":\"%s\","
 						"\"kind\":\"var\",\"type\":\"%s\",\"ref\":"
-						"{\"base\":\"%s\", \"offset\":-0x%x}}",
+						"{\"base\":\"%s\", \"offset\":-%"PFMT64d"}}",
 						var->name, var->type,anal->reg->name[R_REG_NAME_BP],
 						-var->delta);
 				}
@@ -559,13 +663,13 @@ R_API void r_anal_var_list_show(RAnal *anal, RAnalFunction *fcn, int kind, int m
 				if (var->delta < fcn->stack) {
 					anal->cb_printf ("{\"name\":\"%s\","
 						"\"kind\":\"arg\",\"type\":\"%s\",\"ref\":"
-						"{\"base\":\"%s\", \"offset\":0x%x}}",
+						"{\"base\":\"%s\", \"offset\":%"PFMT64d"}}",
 						var->name, var->type,anal->reg->name[R_REG_NAME_SP],
 						var->delta);
 				} else {
 					anal->cb_printf ("{\"name\":\"%s\","
 						"\"kind\":\"var\",\"type\":\"%s\",\"ref\":"
-						"{\"base\":\"%s\", \"offset\":-0x%x}}",
+						"{\"base\":\"%s\", \"offset\":-%"PFMT64d"}}",
 						var->name, var->type,anal->reg->name[R_REG_NAME_SP],
 						var->delta);
 				}
@@ -602,7 +706,7 @@ R_API void r_anal_var_list_show(RAnal *anal, RAnalFunction *fcn, int kind, int m
 				}
 				break;
 			case R_ANAL_VAR_KIND_SPV:
-				if ( var->delta < fcn->stack) {
+				if (var->delta < fcn->stack) {
 					anal->cb_printf ("var %s %s @ %s+0x%x\n",
 						var->type, var->name,
 						anal->reg->name[R_REG_NAME_SP],

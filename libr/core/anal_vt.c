@@ -29,6 +29,7 @@ static RList* getVtableMethods(RCore *core, vtable_info *table) {
 		table->funtions = vtableMethods;
 		return vtableMethods;
 	}
+	r_list_free (vtableMethods);
 	return NULL;
 }
 
